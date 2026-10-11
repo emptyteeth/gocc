@@ -1,0 +1,12 @@
+# 编译产物
+/gocc
+/dist/
+/build/
+
+# 运行期生成的配置与数据
+*.log
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
