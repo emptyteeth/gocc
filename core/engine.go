@@ -1,0 +1,652 @@
+// Package core is what gocc does, with nothing of how it is shown.
+//
+// The native window of the desktop app and the HTTP server of the command
+// line version both drive an Engine: it discovers devices, controls one of
+// them and keeps the playlist. Neither front end can be reached from here,
+// so the same logic serves both, and a test can drive it without either.
+//
+// Every exported method is safe to call from any goroutine. Whoever wants
+// to know when something changed registers on the channels a constructor
+// takes, or reads a Snapshot when it likes.
+package core
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/free/gocc/cast"
+	"github.com/free/gocc/playlist"
+)
+
+// Controller is a device gocc talks to: a real cast.Client, or a stand-in
+// in a test.
+type Controller interface {
+	Status() cast.Status
+	Play(url, contentType string)
+	Pause()
+	Resume()
+	Stop()
+	SetVolume(level float64)
+	SetMuted(muted bool)
+	Refresh()
+	Close()
+}
+
+// Options configures an Engine.
+type Options struct {
+	// DataDir is where the playlist is kept. Empty means the path given to
+	// NewPath, or the working directory when there is none.
+	DataDir string
+	// Iface limits discovery to one network interface. Nil means every
+	// interface, which a machine with more than one should not do: see
+	// cast.Discovery.Iface.
+	Iface *net.Interface
+	// OnChange is called after every change to what Snapshot returns. The
+	// native window asks for a new frame here; the HTTP server wakes its
+	// waiting clients.
+	OnChange func()
+	// OnStatus is called with every status a device reports. It is the
+	// finer grained of the two: a status arrives several times a second
+	// while something plays.
+	OnStatus func(cast.Status, error)
+	// NewController connects to a device. Nil means the real cast.Client;
+	// a test replaces it with one that talks to no device at all.
+	NewController func(device cast.Device, onChange func(cast.Status, error)) (Controller, error)
+	// Discover finds devices and reports them, and those that go away, as
+	// they change, until the returned function is called to stop it. Nil
+	// means cast.Discovery; a test replaces it with a fixed list.
+	Discover func(ctx context.Context, iface *net.Interface, onDevices func([]cast.Device)) (stop func(), err error)
+	// ConnectTimeout bounds connecting to a device. Zero means 15 seconds.
+	ConnectTimeout time.Duration
+}
+
+// Engine is the state of gocc and the things it does.
+type Engine struct {
+	opts Options
+
+	mu         sync.Mutex
+	devices    []cast.Device
+	selected   string
+	stopDisc   func()
+	iface      *net.Interface
+	interfaces []net.Interface
+	client     Controller
+	connecting bool
+	status     cast.Status
+	castErr    error
+
+	playlist *playlist.Playlist
+	entries  []playlist.Entry
+	chosen   int
+	volume   float64
+	muted    bool
+	volumeAt time.Time
+	mutedAt  time.Time
+	started  bool
+	closed   bool
+}
+
+// Snapshot is what an Engine is doing, read at once so that a caller sees
+// a whole state rather than one changing under it.
+type Snapshot struct {
+	Devices    []cast.Device
+	Interfaces []net.Interface
+	Iface      string
+	Selected   string
+	Connecting bool
+	Status     cast.Status
+	Err        string
+	Playlist   []playlist.Entry
+	Chosen     int
+	Volume     float64
+	Muted      bool
+}
+
+// New makes an Engine, reading the playlist and listing the network
+// interfaces, without touching the network yet.
+func New(opts Options) (*Engine, error) {
+	if opts.ConnectTimeout == 0 {
+		opts.ConnectTimeout = 15 * time.Second
+	}
+	if opts.NewController == nil {
+		opts.NewController = func(device cast.Device, onChange func(cast.Status, error)) (Controller, error) {
+			client := cast.NewClient(device, onChange)
+			ctx, cancel := context.WithTimeout(context.Background(), opts.ConnectTimeout)
+			defer cancel()
+			if err := client.Start(ctx); err != nil {
+				client.Close()
+				return nil, err
+			}
+			return client, nil
+		}
+	}
+	if opts.Discover == nil {
+		opts.Discover = discoverWithCast
+	}
+
+	e := &Engine{opts: opts, chosen: -1}
+
+	dir := opts.DataDir
+	if dir == "" {
+		dir = "."
+	}
+	path := filepath.Join(dir, "playlist.txt")
+	loaded, err := playlist.Load(path)
+	if err != nil {
+		// A playlist that cannot be read is no reason to refuse to
+		// start: say so and carry on with an empty list.
+		log.Printf("gocc: reading the playlist: %v", err)
+		loaded = &playlist.Playlist{Path: path}
+	}
+	e.playlist = loaded
+	e.entries = e.playlist.Entries()
+
+	if ifaces, err := cast.Interfaces(); err == nil {
+		e.interfaces = ifaces
+	} else {
+		log.Printf("gocc: listing the network interfaces: %v", err)
+	}
+	// An interface given on the command line is the one to listen on; a
+	// machine with only one needs no choice made for it.
+	if opts.Iface != nil {
+		e.iface = opts.Iface
+	} else if len(e.interfaces) == 1 {
+		e.iface = &e.interfaces[0]
+	}
+	return e, nil
+}
+
+// Start begins discovering devices. It returns at once; the devices appear
+// as they answer. A second call does nothing.
+func (e *Engine) Start(ctx context.Context) {
+	e.mu.Lock()
+	if e.started || e.closed {
+		e.mu.Unlock()
+		return
+	}
+	e.started = true
+	iface, discover := e.iface, e.opts.Discover
+	e.mu.Unlock()
+
+	stop, err := discover(ctx, iface, e.devicesChanged)
+	if err != nil {
+		e.setErr(err)
+		return
+	}
+	e.mu.Lock()
+	e.stopDisc = stop
+	e.mu.Unlock()
+}
+
+// discoverWithCast finds devices with mDNS, and returns a function that
+// ends the search.
+func discoverWithCast(ctx context.Context, iface *net.Interface, onDevices func([]cast.Device)) (func(), error) {
+	d := &cast.Discovery{Iface: iface, OnDevices: onDevices}
+	if err := d.Start(ctx); err != nil {
+		return nil, err
+	}
+	return d.Stop, nil
+}
+
+// devicesChanged records the devices discovery has found, from its own
+// goroutine.
+func (e *Engine) devicesChanged(devices []cast.Device) {
+	e.mu.Lock()
+	e.devices = devices
+	e.mu.Unlock()
+	e.changed()
+}
+
+// SetOnChange replaces the callback that is told when what Snapshot
+// returns changed. A front end that only exists after the Engine does, as
+// a window, sets it here.
+func (e *Engine) SetOnChange(fn func()) {
+	e.mu.Lock()
+	e.opts.OnChange = fn
+	e.mu.Unlock()
+}
+
+// changed tells the front end that what Snapshot returns is different. It
+// may be called from any goroutine.
+func (e *Engine) changed() {
+	e.mu.Lock()
+	onChange := e.opts.OnChange
+	e.mu.Unlock()
+	if onChange != nil {
+		onChange()
+	}
+}
+
+// statusChanged takes a status the device reported, from the client's
+// goroutine.
+func (e *Engine) statusChanged(status cast.Status, err error) {
+	e.mu.Lock()
+	e.status = status
+	if err != nil {
+		e.castErr = err
+	}
+	// Follow the device's volume unless the user has just set it: a
+	// slider must not jump back under a hand still moving it.
+	if time.Since(e.volumeAt) > 2*time.Second {
+		e.volume = status.Volume
+	}
+	if time.Since(e.mutedAt) > 2*time.Second {
+		e.muted = status.Muted
+	}
+	onStatus := e.opts.OnStatus
+	e.mu.Unlock()
+
+	if onStatus != nil {
+		onStatus(status, err)
+	}
+	e.changed()
+}
+
+// setErr records an error for the front end to show.
+func (e *Engine) setErr(err error) {
+	if err == nil {
+		return
+	}
+	e.mu.Lock()
+	e.castErr = err
+	e.mu.Unlock()
+	e.changed()
+}
+
+// ReportError records an error for the front end to show, for the mistakes
+// a front end finds itself, as a form that does not hold an entry.
+func (e *Engine) ReportError(err error) { e.setErr(err) }
+
+// Snapshot reads what the Engine is doing.
+func (e *Engine) Snapshot() Snapshot {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// A device that has not reported yet, or one that reported nothing,
+	// is idle: the state a front end shows must always be a real one.
+	status := e.status
+	if status.State == "" {
+		status.State = cast.StateIdle
+	}
+
+	s := Snapshot{
+		Devices:    append([]cast.Device(nil), e.devices...),
+		Interfaces: append([]net.Interface(nil), e.interfaces...),
+		Selected:   e.selected,
+		Connecting: e.connecting,
+		Status:     status,
+		Playlist:   append([]playlist.Entry(nil), e.entries...),
+		Chosen:     e.chosen,
+		Volume:     e.volume,
+		Muted:      e.muted,
+	}
+	if e.iface != nil {
+		s.Iface = e.iface.Name
+	}
+	if e.castErr != nil {
+		s.Err = e.castErr.Error()
+	}
+	return s
+}
+
+// Choose connects to a device, letting go of the one before it. The
+// connection is made on a goroutine of its own, so that the caller is not
+// held up while a slow device answers.
+func (e *Engine) Choose(device cast.Device) {
+	e.mu.Lock()
+	if e.selected == device.UUID && e.client != nil {
+		e.mu.Unlock()
+		return
+	}
+	old := e.client
+	e.client = nil
+	e.selected = device.UUID
+	e.connecting = true
+	e.castErr = nil
+	e.status = cast.Status{}
+	e.mu.Unlock()
+	e.changed()
+
+	go func() {
+		if old != nil {
+			old.Close()
+		}
+
+		client, err := e.opts.NewController(device, e.statusChanged)
+		if err != nil {
+			e.mu.Lock()
+			// The device may have been let go, or another chosen,
+			// while this one was connecting.
+			if e.selected == device.UUID {
+				e.connecting = false
+				e.castErr = err
+			}
+			e.mu.Unlock()
+			e.changed()
+			return
+		}
+
+		e.mu.Lock()
+		if e.selected != device.UUID {
+			// Another device was chosen while this one connected.
+			e.mu.Unlock()
+			client.Close()
+			return
+		}
+		e.client = client
+		e.connecting = false
+		// The device's own volume is the truth about the slider.
+		status := client.Status()
+		e.volume, e.muted = status.Volume, status.Muted
+		e.mu.Unlock()
+
+		e.changed()
+	}()
+}
+
+// ChooseByUUID connects to the device with this UUID among those found.
+func (e *Engine) ChooseByUUID(uuid string) error {
+	e.mu.Lock()
+	device, ok := e.deviceLocked(uuid)
+	e.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("no device with uuid %q", uuid)
+	}
+	e.Choose(device)
+	return nil
+}
+
+// deviceLocked finds a device among those found. The caller holds mu.
+func (e *Engine) deviceLocked(uuid string) (cast.Device, bool) {
+	for _, d := range e.devices {
+		if d.UUID == uuid {
+			return d, true
+		}
+	}
+	return cast.Device{}, false
+}
+
+// Disconnect lets go of the device being controlled.
+func (e *Engine) Disconnect() {
+	e.mu.Lock()
+	client := e.client
+	e.client = nil
+	e.selected = ""
+	e.status = cast.Status{}
+	e.connecting = false
+	e.mu.Unlock()
+	e.changed()
+	if client != nil {
+		go client.Close()
+	}
+}
+
+// client returns the device being controlled, if any.
+func (e *Engine) controller() Controller {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.client
+}
+
+// Play sends an entry's URL to the device being controlled.
+func (e *Engine) Play(entry playlist.Entry) {
+	client := e.controller()
+	if client == nil {
+		e.setErr(cast.ErrNoClient)
+		return
+	}
+	client.Play(entry.URL, entry.ContentType)
+}
+
+// PlayChosen plays the entry chosen in the playlist.
+func (e *Engine) PlayChosen() {
+	e.mu.Lock()
+	i, entries := e.chosen, e.entries
+	e.mu.Unlock()
+	if i >= 0 && i < len(entries) {
+		e.Play(entries[i])
+	}
+}
+
+// PlayIndex plays the entry at i.
+func (e *Engine) PlayIndex(i int) error {
+	e.mu.Lock()
+	entries := e.entries
+	e.mu.Unlock()
+	if i < 0 || i >= len(entries) {
+		return fmt.Errorf("no entry at %d", i)
+	}
+	e.Play(entries[i])
+	return nil
+}
+
+// Pause pauses the device.
+func (e *Engine) Pause() {
+	if client := e.controller(); client != nil {
+		client.Pause()
+	}
+}
+
+// Resume plays again.
+func (e *Engine) Resume() {
+	if client := e.controller(); client != nil {
+		client.Resume()
+	}
+}
+
+// Stop stops the device's media.
+func (e *Engine) Stop() {
+	if client := e.controller(); client != nil {
+		client.Stop()
+	}
+}
+
+// TogglePlay pauses what plays, and plays what is paused.
+func (e *Engine) TogglePlay() {
+	status := e.Status()
+	switch status.State {
+	case cast.StatePlaying, cast.StateBuffering:
+		e.Pause()
+	case cast.StatePaused:
+		e.Resume()
+	default:
+		// Nothing is loaded: play the chosen entry instead.
+		e.PlayChosen()
+	}
+}
+
+// Status returns the last status the device reported.
+func (e *Engine) Status() cast.Status {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.status
+}
+
+// SetVolume sets the device's volume, remembering that the user asked for
+// it. A level outside 0 to 1 is brought into it, rather than refused: a
+// slider cannot ask for one, but a caller of the API can.
+func (e *Engine) SetVolume(level float64) {
+	level = clampVolume(level)
+	e.mu.Lock()
+	e.volume = level
+	e.volumeAt = time.Now()
+	e.mu.Unlock()
+	if client := e.controller(); client != nil {
+		client.SetVolume(level)
+	}
+	e.changed()
+}
+
+// clampVolume brings a level into the range a device accepts.
+func clampVolume(level float64) float64 {
+	switch {
+	case level < 0:
+		return 0
+	case level > 1:
+		return 1
+	}
+	return level
+}
+
+// SetMuted turns the device's sound off, or back on.
+func (e *Engine) SetMuted(muted bool) {
+	e.mu.Lock()
+	e.muted = muted
+	e.mutedAt = time.Now()
+	e.mu.Unlock()
+	if client := e.controller(); client != nil {
+		client.SetMuted(muted)
+	}
+	e.changed()
+}
+
+// Refresh reads the device's status again.
+func (e *Engine) Refresh() {
+	if client := e.controller(); client != nil {
+		client.Refresh()
+	}
+}
+
+// UseInterface limits discovery to one network interface, and looks again.
+// A nil interface listens on every one.
+func (e *Engine) UseInterface(iface *net.Interface) {
+	e.stop()
+	e.mu.Lock()
+	e.iface, e.devices = iface, nil
+	e.mu.Unlock()
+	e.Start(context.Background())
+}
+
+// Rediscover stops discovery and starts it again, to find devices that
+// appeared without being announced.
+func (e *Engine) Rediscover() {
+	e.stop()
+	e.mu.Lock()
+	e.devices = nil
+	e.mu.Unlock()
+	e.Start(context.Background())
+}
+
+// stop ends discovery, if one is running, and lets it start again.
+func (e *Engine) stop() {
+	e.mu.Lock()
+	stop := e.stopDisc
+	e.stopDisc, e.started = nil, false
+	e.mu.Unlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+// Close lets go of the device and stops discovery.
+func (e *Engine) Close() {
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	e.closed = true
+	client, stop := e.client, e.stopDisc
+	e.client, e.stopDisc = nil, nil
+	e.mu.Unlock()
+
+	if client != nil {
+		client.Close()
+	}
+	if stop != nil {
+		stop()
+	}
+}
+
+// AddEntry adds an entry to the playlist and saves it.
+func (e *Engine) AddEntry(entry playlist.Entry) error {
+	if err := e.playlist.Add(entry); err != nil {
+		err = fmt.Errorf("playlist: %w", err)
+		e.setErr(err)
+		return err
+	}
+	e.reloadEntries()
+	return nil
+}
+
+// RemoveEntry takes the entry at i out of the playlist and saves it.
+func (e *Engine) RemoveEntry(i int) error {
+	if err := e.playlist.Remove(i); err != nil {
+		err = fmt.Errorf("playlist: %w", err)
+		e.setErr(err)
+		return err
+	}
+	e.mu.Lock()
+	if e.chosen >= e.playlist.Len() {
+		e.chosen = e.playlist.Len() - 1
+	}
+	e.mu.Unlock()
+	e.reloadEntries()
+	return nil
+}
+
+// MoveEntry moves the entry at from to the index to, and keeps it chosen.
+func (e *Engine) MoveEntry(from, to int) error {
+	if err := e.playlist.Move(from, to); err != nil {
+		err = fmt.Errorf("playlist: %w", err)
+		e.setErr(err)
+		return err
+	}
+	e.mu.Lock()
+	e.chosen = to
+	if to > from {
+		e.chosen = to - 1
+	}
+	e.mu.Unlock()
+	e.reloadEntries()
+	return nil
+}
+
+// ChooseEntry records which playlist entry is chosen.
+func (e *Engine) ChooseEntry(i int) {
+	e.mu.Lock()
+	e.chosen = i
+	e.mu.Unlock()
+	e.changed()
+}
+
+// reloadEntries reads the playlist back into the digest the front ends
+// read.
+func (e *Engine) reloadEntries() {
+	entries := e.playlist.Entries()
+	e.mu.Lock()
+	e.entries = entries
+	e.mu.Unlock()
+	e.changed()
+}
+
+// PlaylistPath is the file the playlist is kept in.
+func (e *Engine) PlaylistPath() string { return e.playlist.Path }
+
+// ValidateEntry reports what is wrong with an entry before it is saved.
+// The playlist package checks the same things, but the message is worth
+// having where the form is, and both front ends want the same one.
+func ValidateEntry(entry playlist.Entry) error {
+	if entry.Name == "" {
+		return fmt.Errorf("the entry needs a name")
+	}
+	if entry.URL == "" {
+		return fmt.Errorf("the entry needs a URL")
+	}
+	if !strings.Contains(entry.URL, "://") {
+		return fmt.Errorf("%q is not an absolute URL, as http://host/stream.mp3", entry.URL)
+	}
+	if !strings.HasPrefix(entry.URL, "http://") && !strings.HasPrefix(entry.URL, "https://") {
+		return fmt.Errorf("%q is not an http or https URL", entry.URL)
+	}
+	if strings.ContainsAny(entry.URL, " \t\n") {
+		return fmt.Errorf("the URL holds a space")
+	}
+	return nil
+}

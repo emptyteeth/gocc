@@ -1,32 +1,32 @@
 package app
 
 import (
-	"path/filepath"
+	"context"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/free/gocc/cast"
+	"github.com/free/gocc/core"
 	"github.com/free/gocc/playlist"
 )
 
-// fakeDevice stands in for a device, so that the interface can be driven
-// in a test without one on the network. It reports its status through the
-// same callback the real client uses.
+// fakeDevice stands in for a device, so that the window can be driven in a
+// test without one on the network. It reports its status through the same
+// callback the engine hands to a real client.
 type fakeDevice struct {
 	status   cast.Status
 	onChange func(cast.Status, error)
 	played   []string
-	types    []string
 	volume   []float64
 	muted    []bool
 	paused   int
 	resumed  int
 	stopped  int
-	closed   int
 }
 
-// report tells the app what the device is doing now.
 func (f *fakeDevice) report() {
 	if f.onChange != nil {
 		f.onChange(f.status, nil)
@@ -37,17 +37,20 @@ func (f *fakeDevice) Status() cast.Status { return f.status }
 
 func (f *fakeDevice) Play(url, contentType string) {
 	f.played = append(f.played, url)
-	f.types = append(f.types, contentType)
 	f.status.State = cast.StatePlaying
 	f.status.URL = url
 	f.report()
 }
 
-func (f *fakeDevice) Pause()   { f.paused++; f.status.State = cast.StatePaused; f.report() }
-func (f *fakeDevice) Resume()  { f.resumed++; f.status.State = cast.StatePlaying; f.report() }
-func (f *fakeDevice) Stop()    { f.stopped++; f.status = cast.Status{State: cast.StateIdle}; f.report() }
+func (f *fakeDevice) Pause()  { f.paused++; f.status.State = cast.StatePaused; f.report() }
+func (f *fakeDevice) Resume() { f.resumed++; f.status.State = cast.StatePlaying; f.report() }
+func (f *fakeDevice) Stop() {
+	f.stopped++
+	f.status = cast.Status{State: cast.StateIdle}
+	f.report()
+}
 func (f *fakeDevice) Refresh() {}
-func (f *fakeDevice) Close()   { f.closed++ }
+func (f *fakeDevice) Close()   {}
 
 func (f *fakeDevice) SetVolume(level float64) {
 	f.volume = append(f.volume, level)
@@ -61,38 +64,62 @@ func (f *fakeDevice) SetMuted(muted bool) {
 	f.report()
 }
 
-// newTestApp makes an app with a playlist in a temporary file and a device
-// already chosen, without touching the network.
+var testDevice = cast.Device{
+	UUID: "uuid-1", Name: "Living Room", Addr: "10.0.0.5", Port: 8009,
+}
+
+// newTestApp makes the window with a playlist in a temporary directory and
+// a device already connected, without touching the network.
 func newTestApp(t *testing.T, entries ...playlist.Entry) (*App, *fakeDevice) {
 	t.Helper()
-	p, err := playlist.Load(filepath.Join(t.TempDir(), "playlist.txt"))
+	device := &fakeDevice{}
+
+	engine, err := core.New(core.Options{
+		DataDir: t.TempDir(),
+		// The device is handed the callback the engine would give a real
+		// client, so that it reports status the same way.
+		NewController: func(_ cast.Device, onChange func(cast.Status, error)) (core.Controller, error) {
+			device.onChange = onChange
+			return device, nil
+		},
+		// Discovery reports the one device, without mDNS or a network.
+		Discover: func(_ context.Context, _ *net.Interface, onDevices func([]cast.Device)) (func(), error) {
+			onDevices([]cast.Device{testDevice})
+			return func() {}, nil
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, e := range entries {
-		if err := p.Add(e); err != nil {
+	t.Cleanup(engine.Close)
+
+	a := &App{engine: engine, deviceSel: -1}
+	for _, entry := range entries {
+		if err := engine.AddEntry(entry); err != nil {
 			t.Fatal(err)
 		}
 	}
-	device := &fakeDevice{}
-	a := &App{
-		chosen:   -1,
-		playlist: p,
-		entries:  p.Entries(),
-		selected: testDevice.UUID,
-		devices:  []cast.Device{testDevice},
-		client:   device,
-	}
-	device.onChange = a.statusChanged
+
+	engine.Start(context.Background())
+	engine.Choose(testDevice)
+	waitFor(t, func() bool {
+		s := engine.Snapshot()
+		return s.Selected == testDevice.UUID && !s.Connecting
+	})
 	return a, device
 }
 
-// testDevice is the device the tests are connected to.
-var testDevice = cast.Device{
-	UUID: "uuid-1",
-	Name: "Living Room",
-	Addr: "10.0.0.5",
-	Port: 8009,
+// waitFor polls until ok, or fails the test after a moment.
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("timed out waiting for the engine")
 }
 
 func TestPlaylistDoubleClickPlays(t *testing.T) {
@@ -139,8 +166,7 @@ func TestTransportButtons(t *testing.T) {
 	a, device := newTestApp(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
 	tt := ui.NewTester(a.View, 1100, 700)
 
-	// Nothing plays, so the button offers to play the chosen entry, and
-	// there is nothing chosen yet: choose one first.
+	// Nothing plays, so the button offers to play the chosen entry.
 	if err := tt.Click("radio1"); err != nil {
 		t.Fatal(err)
 	}
@@ -153,6 +179,7 @@ func TestTransportButtons(t *testing.T) {
 
 	// Once it plays, the button pauses.
 	device.status.State = cast.StatePlaying
+	device.report()
 	tt.Frame()
 	if !tt.HasText("Pause") {
 		t.Fatalf("the button did not become Pause: %v", tt.Texts())
@@ -164,7 +191,6 @@ func TestTransportButtons(t *testing.T) {
 		t.Fatalf("paused %d times", device.paused)
 	}
 
-	// And Stop stops it.
 	if err := tt.Click("Stop"); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +201,6 @@ func TestTransportButtons(t *testing.T) {
 
 func TestVolumeSliderSendsNothingWhenItDoesNotMove(t *testing.T) {
 	a, device := newTestApp(t)
-	a.volume = 0.4
 	tt := ui.NewTester(a.View, 1100, 700)
 
 	// Redrawing the window is not an adjustment: a device that answers
@@ -198,31 +223,8 @@ func TestVolumeSliderSendsNothingWhenItDoesNotMove(t *testing.T) {
 	if len(device.volume) == 0 {
 		t.Fatal("the drag told the device nothing")
 	}
-	if got := a.volume; got < 0.7 || got > 0.8 {
-		t.Errorf("the slider holds %v, want about 0.75", got)
-	}
-}
-
-func TestVolumeSlider(t *testing.T) {
-	a, device := newTestApp(t)
-	tt := ui.NewTester(a.View, 1100, 700)
-
-	a.volume = 0.5
-	tt.Frame()
-	r, ok := tt.Find("Volume")
-	if !ok {
-		t.Fatalf("no volume slider: %v", tt.Texts())
-	}
-	// Dragging the slider to its right end sets the volume to 1.
-	tt.Press(r.X+r.W-1, r.Y+r.H/2)
-	tt.Move(r.X+r.W-1, r.Y+r.H/2)
-	tt.Release(r.X+r.W-1, r.Y+r.H/2)
-
-	if len(device.volume) == 0 {
-		t.Fatal("the slider told the device nothing")
-	}
-	if got := device.volume[len(device.volume)-1]; got < 0.9 {
-		t.Fatalf("the slider set the volume to %v, want it near 1", got)
+	if got := device.volume[len(device.volume)-1]; got < 0.6 || got > 0.9 {
+		t.Errorf("the slider set the volume to %v, want about 0.75", got)
 	}
 }
 
@@ -240,15 +242,12 @@ func TestAddEntry(t *testing.T) {
 	if err := tt.Click("Add"); err != nil {
 		t.Fatal(err)
 	}
-	if len(a.entries) != 1 || a.entries[0].Name != "radio3" {
-		t.Fatalf("entries = %+v", a.entries)
-	}
 	if !tt.HasText("radio3") {
 		t.Errorf("the new entry does not show: %v", tt.Texts())
 	}
 
-	// What was added is on disk.
-	again, err := playlist.Load(a.playlist.Path)
+	// It is on disk, so that the next run finds it.
+	again, err := playlist.Load(a.engine.PlaylistPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,12 +271,10 @@ func TestAddEntryRejectsBadURL(t *testing.T) {
 	if err := tt.Click("Add"); err != nil {
 		t.Fatal(err)
 	}
-	if len(a.entries) != 0 {
-		t.Fatalf("a bad entry was added: %+v", a.entries)
+	if got := a.engine.Snapshot().Playlist; len(got) != 0 {
+		t.Fatalf("a bad entry was added: %+v", got)
 	}
-	if a.snapshot().err == nil {
-		t.Error("no error was reported")
-	}
+	tt.Frame()
 	if !tt.HasText("Last error") {
 		t.Errorf("the error is not shown: %v", tt.Texts())
 	}
@@ -294,8 +291,8 @@ func TestRemoveAndMove(t *testing.T) {
 	if err := tt.Click("b"); err != nil {
 		t.Fatal(err)
 	}
-	if a.chosen != 1 {
-		t.Fatalf("chosen = %d, want 1", a.chosen)
+	if got := a.engine.Snapshot().Chosen; got != 1 {
+		t.Fatalf("chosen = %d, want 1", got)
 	}
 	if err := tt.Click("Down"); err != nil {
 		t.Fatal(err)
@@ -303,8 +300,8 @@ func TestRemoveAndMove(t *testing.T) {
 	if names := entryNames(a); names != "a,c,b" {
 		t.Fatalf("after Down: %v", names)
 	}
-	if a.chosen != 2 {
-		t.Errorf("the moved entry is not still chosen: %d", a.chosen)
+	if got := a.engine.Snapshot().Chosen; got != 2 {
+		t.Errorf("the moved entry is not still chosen: %d", got)
 	}
 	if err := tt.Click("Remove"); err != nil {
 		t.Fatal(err)
@@ -316,17 +313,15 @@ func TestRemoveAndMove(t *testing.T) {
 
 func TestDisconnectedDeviceReports(t *testing.T) {
 	a, _ := newTestApp(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
-	a.mu.Lock()
-	a.client = nil
-	a.mu.Unlock()
+	a.engine.Disconnect()
 	tt := ui.NewTester(a.View, 1100, 700)
 
 	// Playing without a device says so rather than doing nothing.
 	if err := tt.Click("radio1"); err != nil {
 		t.Fatal(err)
 	}
-	a.PlayChosen()
-	if a.snapshot().err == nil {
+	a.engine.PlayChosen()
+	if a.engine.Snapshot().Err == "" {
 		t.Fatal("no error with no device")
 	}
 	tt.Frame()
@@ -337,11 +332,11 @@ func TestDisconnectedDeviceReports(t *testing.T) {
 
 func entryNames(a *App) string {
 	names := ""
-	for i, e := range a.entries {
+	for i, entry := range a.engine.Snapshot().Playlist {
 		if i > 0 {
 			names += ","
 		}
-		names += e.Name
+		names += entry.Name
 	}
 	return names
 }

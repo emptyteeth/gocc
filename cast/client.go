@@ -25,19 +25,19 @@ const (
 // and how loud it is.
 type Status struct {
 	// State is the player's state.
-	State PlayerState
+	State PlayerState `json:"state"`
 	// Title, Artist and URL describe what plays.
-	Title  string
-	Artist string
-	URL    string
+	Title  string `json:"title,omitempty"`
+	Artist string `json:"artist,omitempty"`
+	URL    string `json:"url,omitempty"`
 	// Volume is the level from 0 to 1, Muted whether sound is off.
-	Volume float64
-	Muted  bool
+	Volume float64 `json:"volume"`
+	Muted  bool    `json:"muted"`
 	// IdleReason says why an idle player is idle: "FINISHED", "CANCELLED",
 	// "INTERRUPTED" or "ERROR".
-	IdleReason string
+	IdleReason string `json:"idleReason,omitempty"`
 	// CurrentTime is how far into the media the device is, in seconds.
-	CurrentTime float64
+	CurrentTime float64 `json:"currentTime,omitempty"`
 }
 
 // Playing reports whether the device is playing or about to.

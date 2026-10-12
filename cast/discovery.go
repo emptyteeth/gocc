@@ -21,14 +21,14 @@ import (
 // Device is a Chromecast found on the network.
 type Device struct {
 	// UUID identifies the device across discoveries and reconnects.
-	UUID string
+	UUID string `json:"uuid"`
 	// Name is what the device calls itself, as "Living Room".
-	Name string
+	Name string `json:"name"`
 	// Model is the device's model name, as "Chromecast Ultra".
-	Model string
+	Model string `json:"model"`
 	// Addr and Port are where the device answers.
-	Addr string
-	Port int
+	Addr string `json:"addr"`
+	Port int    `json:"port"`
 	// iface is the network interface the device was found on.
 	iface *net.Interface
 }

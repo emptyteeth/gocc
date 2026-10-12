@@ -2,10 +2,14 @@
 // them, plays the streams of a playlist on the one chosen, and sets what
 // it plays and how loud.
 //
+// This is the desktop app, whose window MyGo draws itself. The command
+// line version, gocc-cli, serves the same thing to a browser instead.
+//
 //	gocc
 package main
 
 import (
+	"context"
 	"log"
 
 	"github.com/egoist/mygo"
@@ -20,10 +24,16 @@ func main() {
 	// name set later would send it somewhere else.
 	mygo.App.SetName("gocc")
 
-	application, err := app.New()
+	dataDir, err := mygo.App.Path(mygo.PathUserData)
+	if err != nil {
+		log.Printf("gocc: finding the data directory: %v", err)
+	}
+
+	application, err := app.New(dataDir)
 	if err != nil {
 		log.Fatalf("gocc: %v", err)
 	}
+	defer application.Close()
 
 	mygo.App.WhenReady(func() {
 		win := mygo.NewWindow(mygo.WindowOptions{
@@ -35,11 +45,10 @@ func main() {
 			Content:   ui.View(application.View),
 		})
 		application.Attach(win)
-		application.Start()
+		application.Start(context.Background())
 	})
 
 	if err := mygo.App.Run(); err != nil {
 		log.Fatalf("gocc: %v", err)
 	}
-	application.Close()
 }

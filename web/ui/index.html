@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gocc</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --surface: #f4f5f7;
+    --surface-hover: #e9ebef;
+    --border: #d8dbe0;
+    --text: #16181d;
+    --muted: #6b7280;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --danger: #b91c1c;
+    --radius: 8px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181d;
+      --surface: #22252c;
+      --surface-hover: #2c3038;
+      --border: #3a3f49;
+      --text: #e8eaee;
+      --muted: #9aa2af;
+      --accent: #3b82f6;
+      --accent-text: #ffffff;
+      --danger: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 10px 16px; border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 15px; margin: 0; }
+  header .status { color: var(--muted); font-size: 12px; margin-left: auto; }
+  header .status.error { color: var(--danger); }
+
+  main {
+    flex: 1; min-height: 0;
+    display: grid; grid-template-columns: 250px minmax(0, 1fr) 340px;
+  }
+  .pane { padding: 12px; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+  .pane + .pane { border-left: 1px solid var(--border); }
+  .pane h2 {
+    font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--muted); margin: 0;
+  }
+  .row-between { display: flex; align-items: center; gap: 6px; }
+  .row-between h2 { flex: 1; }
+
+  button {
+    font: inherit; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 5px 10px; cursor: pointer;
+  }
+  button:hover:not(:disabled) { background: var(--surface-hover); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+  button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+  input {
+    font: inherit; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 5px 8px; width: 100%; min-width: 0;
+  }
+
+  ul.list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 0; }
+  ul.list li {
+    padding: 6px 8px; border-radius: var(--radius); cursor: default;
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  ul.list li + li { margin-top: 2px; }
+  ul.list li:hover { background: var(--surface-hover); }
+  ul.list li.chosen { background: var(--accent); color: var(--accent-text); }
+  ul.list li .name { display: flex; align-items: center; gap: 6px; }
+  ul.list li .sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul.list li.chosen .sub { color: var(--accent-text); opacity: .85; }
+  .empty { color: var(--muted); font-size: 12px; padding: 8px; }
+
+  .card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px; display: flex; flex-direction: column; gap: 6px;
+  }
+  .card .state { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .card .track { font-size: 13px; }
+  .card .url { font-size: 11px; color: var(--muted); word-break: break-all; }
+  .badge {
+    font-size: 11px; padding: 1px 6px; border-radius: 999px;
+    background: var(--surface-hover); color: var(--muted);
+  }
+
+  .transport { display: flex; gap: 8px; }
+  .transport button { min-width: 88px; }
+
+  .volume { display: flex; align-items: center; gap: 10px; }
+  .volume input[type=range] { flex: 1; padding: 0; }
+  .volume .pct { width: 42px; text-align: right; color: var(--muted); font-size: 12px; }
+  label.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+  label.check input { width: auto; }
+
+  form.add {
+    background: var(--surface); border-radius: var(--radius);
+    padding: 8px; display: flex; flex-direction: column; gap: 6px;
+  }
+  form.add .actions { display: flex; justify-content: flex-end; }
+
+  .error {
+    border-radius: var(--radius); padding: 8px; background: var(--surface);
+    font-size: 12px;
+  }
+  .error b { color: var(--danger); display: block; }
+  .error span { color: var(--muted); word-break: break-word; }
+  .spinner { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>gocc</h1>
+  <span id="header-status" class="status"></span>
+</header>
+
+<main>
+  <section class="pane" aria-label="Devices">
+    <div class="row-between">
+      <h2>Devices</h2>
+      <button id="scan" title="Look for devices again">Scan</button>
+    </div>
+    <ul class="list" id="devices"></ul>
+  </section>
+
+  <section class="pane" aria-label="Device">
+    <div id="control"></div>
+  </section>
+
+  <section class="pane" aria-label="Playlist">
+    <div class="row-between">
+      <h2>Playlist</h2>
+      <button id="up" title="Move the entry up">Up</button>
+      <button id="down" title="Move the entry down">Down</button>
+      <button id="remove" title="Take the entry out">Remove</button>
+    </div>
+    <ul class="list" id="playlist"></ul>
+    <form class="add" id="add">
+      <input id="add-name" placeholder="Name" autocomplete="off">
+      <input id="add-url" placeholder="http://radio.example/stream.mp3" autocomplete="off">
+      <input id="add-type" placeholder="Content type (optional)" autocomplete="off">
+      <div class="actions"><button class="primary" type="submit">Add</button></div>
+    </form>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+// state is the last thing the server sent. The page is updated from it in
+// place whenever it changes, which is what makes two browsers agree.
+let state = null;
+
+const $ = (id) => document.getElementById(id);
+
+// api calls the server, and throws what it says went wrong.
+async function api(method, path, body) {
+  const res = await fetch(path, {
+    method,
+    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) {
+    let message = res.status + " " + res.statusText;
+    try { message = (await res.json()).error || message; } catch (_) {}
+    throw new Error(message);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+// lastError is a mistake the page made, as a form that does not hold an
+// entry. It clears when the server sends a state again.
+let lastError = "";
+
+// act runs a call; a failure is shown rather than thrown away.
+function act(fn) {
+  return async (event) => {
+    try { await fn(event); } catch (err) {
+      lastError = err && err.message ? err.message : String(err);
+      render();
+    }
+  };
+}
+
+// render updates the page from state, changing what it must and leaving
+// the rest alone: a list is not rebuilt while it is scrolled, and the
+// volume slider is not moved under a hand that is dragging it.
+function render() {
+  if (!state) return;
+  renderHeader();
+  renderDevices();
+  renderControl();
+  renderPlaylist();
+}
+
+// --- header --------------------------------------------------------------
+
+function renderHeader() {
+  const el = $("header-status");
+  if (lastError || state.error) {
+    el.textContent = lastError || state.error;
+    el.className = "status error";
+  } else {
+    const n = state.devices.length;
+    el.textContent = n === 1 ? "1 device found" : n + " devices found";
+    el.className = "status";
+  }
+}
+
+// --- devices -------------------------------------------------------------
+
+function renderDevices() {
+  const list = $("devices");
+  if (state.devices.length === 0) {
+    replace(list, [el("li", { class: "empty" }, "Looking for devices…")]);
+    return;
+  }
+  const rows = state.devices.map((d) => {
+    const li = el("li", { class: d.connected ? "chosen" : "" });
+    li.append(
+      el("span", { class: "name" }, (d.connected ? "● " : "") + d.name),
+      el("span", { class: "sub" }, d.addr),
+    );
+    li.onclick = act(() => api("POST", "/api/choose", { uuid: d.uuid }));
+    return li;
+  });
+  replace(list, rows);
+}
+
+// --- the chosen device ---------------------------------------------------
+
+function renderControl() {
+  const box = $("control");
+  const nodes = [];
+
+  if (lastError) {
+    nodes.push(el("div", { class: "error" }, [
+      el("b", {}, "Last error"),
+      el("span", {}, lastError),
+    ]));
+  }
+
+  if (!state.selected) {
+    nodes.push(el("div", { class: "card" }, [
+      el("div", { class: "state" }, "No device selected"),
+      el("div", { class: "url" }, "Choose a device on the left to control it."),
+    ]));
+    replace(box, nodes);
+    return;
+  }
+
+  const device = state.devices.find((d) => d.uuid === state.selected);
+  nodes.push(el("div", { class: "row-between" }, [
+    el("div", {}, [
+      el("div", { class: "track" }, device ? device.name : "Unknown device"),
+      el("div", { class: "url" }, device ? device.addr : ""),
+    ]),
+    button("Disconnect", () => api("POST", "/api/disconnect")),
+  ]));
+
+  if (state.connecting) {
+    nodes.push(el("div", { class: "spinner" }, "Connecting…"));
+    replace(box, nodes);
+    return;
+  }
+
+  const card = el("div", { class: "card" }, [
+    el("div", { class: "state" }, [
+      state.description,
+      state.muted ? el("span", { class: "badge" }, "Muted") : null,
+    ]),
+  ]);
+  const track = [state.artist, state.title].filter(Boolean).join(" — ");
+  if (track) card.append(el("div", { class: "track" }, track));
+  if (state.url) card.append(el("div", { class: "url" }, state.url));
+  if (state.idle) {
+    card.append(el("div", { class: "url" }, "Nothing is playing. Double-click an entry of the playlist."));
+  }
+  nodes.push(card);
+
+  nodes.push(el("div", { class: "transport" }, [
+    button(state.playing ? "Pause" : "Play", () => api("POST", "/api/toggle"), "primary"),
+    disabled(button("Stop", () => api("POST", "/api/stop")), state.idle),
+    button("Refresh", () => api("POST", "/api/refresh")),
+  ]));
+
+  // The volume slider and the mute box are kept as they are, so that a
+  // state arriving while the slider is being dragged does not move the
+  // knob under the hand.
+  if (!volume.range.dragging) {
+    volume.range.value = String(state.volume);
+    volume.pct.textContent = Math.round(state.volume * 100) + "%";
+  }
+  volume.mute.checked = state.muted;
+  nodes.push(el("div", { class: "volume" }, [volume.range, volume.pct]));
+  nodes.push(el("label", { class: "check" }, [volume.mute, "Mute"]));
+
+  replace(box, nodes);
+}
+
+// --- playlist ------------------------------------------------------------
+
+function renderPlaylist() {
+  const list = $("playlist");
+  if (state.playlist.length === 0) {
+    replace(list, [el("li", { class: "empty" }, "No entries yet. Add one below.")]);
+  } else {
+    replace(list, state.playlist.map((entry, i) => {
+      const li = el("li", { class: i === state.chosen ? "chosen" : "" });
+      li.title = "Double-click to play";
+      li.append(
+        el("span", { class: "name" }, (entry.playing ? "▶ " : "") + entry.name),
+        el("span", { class: "sub" }, entry.url),
+      );
+      li.onclick = act(() => api("POST", "/api/playlist/" + i + "/choose"));
+      li.ondblclick = act(() => api("POST", "/api/play", { index: i }));
+      return li;
+    }));
+  }
+
+  const chosen = state.chosen;
+  const last = state.playlist.length - 1;
+  $("up").disabled = chosen <= 0;
+  $("down").disabled = chosen < 0 || chosen >= last;
+  $("remove").disabled = chosen < 0;
+}
+
+// --- small helpers -------------------------------------------------------
+
+function el(tag, attrs, children) {
+  const node = document.createElement(tag);
+  for (const [key, value] of Object.entries(attrs || {})) {
+    if (value === null || value === undefined) continue;
+    if (key === "class") node.className = value;
+    else node.setAttribute(key, value);
+  }
+  for (const child of [].concat(children || [])) {
+    if (child === null || child === undefined) continue;
+    node.append(child.nodeType ? child : document.createTextNode(child));
+  }
+  return node;
+}
+
+// replace swaps the children of a container, keeping any among them the
+// new ones reuse. A node moved to where it already was is left untouched,
+// which is what keeps the scrolled list and the dragged slider steady.
+function replace(container, nodes) {
+  for (const node of nodes) container.append(node);
+  const keep = new Set(nodes);
+  for (const child of Array.from(container.childNodes)) {
+    if (!keep.has(child)) child.remove();
+  }
+}
+
+function button(label, fn, cls) {
+  const b = el("button", { class: cls || "" }, label);
+  b.onclick = act(fn);
+  return b;
+}
+
+function disabled(node, yes) {
+  node.disabled = yes;
+  return node;
+}
+
+// --- the controls that live across renders -------------------------------
+
+// The volume slider and the mute box are made once, so that dragging the
+// slider is not interrupted by a state arriving.
+function buildVolume() {
+  const range = el("input", {
+    type: "range", min: "0", max: "1", step: "0.01",
+    value: "0", "aria-label": "Volume",
+  });
+  const pct = el("span", { class: "pct" }, "0%");
+  // While the knob is held, the browser is the one that knows where it is.
+  range.onpointerdown = () => { range.dragging = true; };
+  range.onpointerup = () => { range.dragging = false; };
+  range.oninput = () => {
+    range.dragging = true;
+    pct.textContent = Math.round(range.value * 100) + "%";
+  };
+  range.onchange = act(() => {
+    range.dragging = false;
+    return api("POST", "/api/volume", { level: Number(range.value) });
+  });
+
+  const mute = el("input", { type: "checkbox" });
+  mute.onchange = act(() => api("POST", "/api/mute", { muted: mute.checked }));
+
+  return { range, pct, mute };
+}
+
+// The two controls are made before anything is drawn, and only their
+// handlers change: the elements themselves never are.
+const volume = buildVolume();
+volume.range.dragging = false;
+
+// --- wiring --------------------------------------------------------------
+
+$("scan").onclick = act(() => api("POST", "/api/scan"));
+$("up").onclick = act(() => api("POST", "/api/playlist/" + state.chosen + "/move", { to: state.chosen - 1 }));
+$("down").onclick = act(() => api("POST", "/api/playlist/" + state.chosen + "/move", { to: state.chosen + 2 }));
+$("remove").onclick = act(() => api("DELETE", "/api/playlist/" + state.chosen));
+
+$("add").onsubmit = act(async (event) => {
+  event.preventDefault();
+  await api("POST", "/api/playlist", {
+    name: $("add-name").value,
+    url: $("add-url").value,
+    contentType: $("add-type").value,
+  });
+  $("add-name").value = "";
+  $("add-url").value = "";
+  $("add-type").value = "";
+  $("add-name").focus();
+});
+
+// The state arrives as it changes, so the page never polls.
+function connect() {
+  const events = new EventSource("/api/events");
+  events.onmessage = (e) => {
+    state = JSON.parse(e.data);
+    lastError = "";
+    render();
+  };
+  events.onerror = () => {
+    // EventSource reconnects on its own; say so while it is away.
+    const el = $("header-status");
+    el.textContent = "Disconnected from the server, reconnecting…";
+    el.className = "status error";
+  };
+}
+
+connect();
+</script>
+</body>
+</html>
