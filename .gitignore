@@ -1,5 +1,7 @@
 # 编译产物
 /gocc
+/gocc-cli
+/bin/
 /dist/
 /build/
 

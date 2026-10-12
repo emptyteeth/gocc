@@ -27,6 +27,7 @@ import (
 
 	"github.com/free/gocc/cast"
 	"github.com/free/gocc/core"
+	"github.com/free/gocc/internal/version"
 	"github.com/free/gocc/web"
 )
 
@@ -38,17 +39,17 @@ func main() {
 
 func run() error {
 	var (
-		listen    = flag.String("listen", "127.0.0.1:8097", "address and port to serve the interface on, as 127.0.0.1:8097 or :8097")
-		ifaceName = flag.String("iface", "", "network interface to discover devices on, as wlan0 (default: every interface)")
-		basicAuth = flag.String("basic-auth", "", "ask browsers for HTTP basic authentication, as user:password (default: none)")
-		dataDir   = flag.String("data-dir", "", "directory holding playlist.txt (default: the user's config directory for gocc)")
-		version   = flag.Bool("version", false, "print the version and exit")
+		listen      = flag.String("listen", "127.0.0.1:8097", "address and port to serve the interface on, as 127.0.0.1:8097 or :8097")
+		ifaceName   = flag.String("iface", "", "network interface to discover devices on, as wlan0 (default: every interface)")
+		basicAuth   = flag.String("basic-auth", "", "ask browsers for HTTP basic authentication, as user:password (default: none)")
+		dataDir     = flag.String("data-dir", "", "directory holding playlist.txt (default: the user's config directory for gocc)")
+		showVersion = flag.Bool("version", false, "print the version and exit")
 	)
 	flag.Usage = usage
 	flag.Parse()
 
-	if *version {
-		fmt.Println("gocc-cli", versionString)
+	if *showVersion {
+		fmt.Println("gocc-cli", version.String())
 		return nil
 	}
 	if flag.NArg() > 0 {
@@ -122,9 +123,6 @@ func run() error {
 	}
 	return <-done
 }
-
-// versionString is the version reported by -version.
-const versionString = "1.0"
 
 // usage prints what the command does and its flags.
 func usage() {

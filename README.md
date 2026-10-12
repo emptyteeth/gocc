@@ -60,6 +60,46 @@ go build -o gocc-cli ./cmd/gocc-cli
 ./gocc-cli --iface wlan0 --listen :8097 --basic-auth alice:s3cret
 ```
 
+## 构建
+
+需要 Go 1.27+。用 `make`：
+
+```sh
+make              # 两个二进制，产出到 bin/
+make gocc         # 只要桌面版
+make gocc-cli     # 只要命令行版
+make install      # 装进 $GOBIN 或 $GOPATH/bin
+make test         # 测试
+make test-race    # 带竞态检测
+make dist         # 为所有平台构建，产出到 dist/
+make clean        # 清理产物
+```
+
+也可以直接 `go build`，不依赖 make：
+
+```sh
+go build -o gocc .                # 桌面版
+go build -o gocc-cli ./cmd/gocc-cli   # 命令行版
+```
+
+`make` 会把版本号、commit 和构建时间用 `-ldflags` 注进二进制（见 `internal/version`）。版本取自 git tag，没有 tag 时用 commit，形如 `v1.0.0` 或 `3dec4af`；工作区有未提交改动时带 `-dirty` 后缀。直接 `go build` 则会显示 `dev`——这是诚实的答案，因为那种构建确实不知道自己的版本。
+
+两个二进制都支持 `--version`：
+
+```sh
+$ ./bin/gocc-cli --version
+gocc-cli v1.0.0 (a1b2c3d, 2026-10-13T02:40:49Z)
+```
+
+`gocc --version` 在初始化界面之前就返回，所以没有显示器的机器上也能用。
+
+### 运行环境
+
+- **`gocc`（桌面版）**：运行需要显示器和 GTK 3（Linux）。构建**不需要** GTK——工具包是通过 `purego` 动态调用的，没有 cgo，所以可以直接交叉编译。
+- **`gocc-cli`（命令行版）**：无窗口，只需一个浏览器。构建和运行都没有额外依赖。
+
+`make dist` 默认构建 linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64 五个平台，每个平台两个二进制，文件名带版本号。
+
 ## 播放列表
 
 一个纯文本文件，一行一个条目，字段之间用制表符分隔：
@@ -85,6 +125,8 @@ jazz	http://jazz.example/stream	audio/aac
 | `web/` | 命令行版界面：HTTP 路由、SSE 推送、内嵌页面（`web/ui/index.html`） |
 | `cast/` | Chromecast：设备发现（`discovery.go`）、单设备控制（`client.go`）、content type 推断（`contenttype.go`）、音量节流（`volume.go`） |
 | `playlist/` | 播放列表的文本文件读写 |
+| `internal/version/` | 构建时注进二进制的版本号 |
+| `Makefile` | `make` 构建两个二进制 |
 
 内核与界面的分界就是 `core` 包的边界：`core` 不知道窗口、帧、DOM 的存在，`app` 和 `web` 各自把 `core.Engine` 的快照翻译成自己的界面。所以加一个前端不影响另一个，测试也能不碰界面直接驱动内核。
 

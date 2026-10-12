@@ -10,15 +10,28 @@ package main
 
 import (
 	"context"
+	"flag"
+	"fmt"
 	"log"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/free/gocc/app"
+	"github.com/free/gocc/internal/version"
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "print the version and exit")
+	flag.Parse()
+
+	// Answer this before anything touches the desktop, so that it works
+	// where there is no display.
+	if *showVersion {
+		fmt.Println("gocc", version.String())
+		return
+	}
+
 	// Name the app before anything asks it where its data lives: the
 	// playlist is stored under a directory named after the app, and a
 	// name set later would send it somewhere else.
