@@ -195,7 +195,9 @@ func (a *App) statusCard(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 		if s.Status.URL != "" {
 			ui.Text(c, s.Status.URL).FontSize(11).TextColor(t.TextMuted).SingleLine()
 		}
-		if s.Status.State == cast.StateIdle {
+		// The hint is for a device the user has not asked anything of; it
+		// would only be noise while the wait for a stream is on.
+		if s.Status.State == cast.StateIdle && !s.Loading {
 			ui.Text(c, "Nothing is playing. Double-click an entry of the playlist.").
 				FontSize(11).TextColor(t.TextMuted)
 		}
@@ -218,7 +220,7 @@ func mediaTitle(status cast.Status) string {
 // transport draws the buttons that control playback.
 func (a *App) transport(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	playing := s.Status.Playing()
-	ui.Row(c).Gap(8).Children(func() {
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		label := "Play"
 		if playing {
 			label = "Pause"
@@ -229,6 +231,16 @@ func (a *App) transport(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 		ui.Button(c, "Refresh").Tooltip("Read the device's state again").
 			OnClick(a.engine.Refresh)
 	})
+
+	// A device buffers a stream before it plays it, and the app is
+	// otherwise quiet for that moment: say what is being waited for, on a
+	// line of its own so that it is not cut short.
+	if s.Loading {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Spinner(c)
+			ui.Text(c, s.LoadingReason).TextColor(t.TextMuted).SingleLine()
+		})
+	}
 }
 
 // volumeRow draws the volume slider and the mute check box.

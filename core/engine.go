@@ -81,6 +81,13 @@ type Engine struct {
 	status     cast.Status
 	castErr    error
 
+	// loading is the entry the device was last asked to play, and when.
+	// A device takes a moment to buffer a stream and report that it is
+	// playing, and until it does, this is what tells the user their
+	// request was heard.
+	loading      *loading
+	loadingTimer *time.Timer
+
 	playlist *playlist.Playlist
 	entries  []playlist.Entry
 	chosen   int
@@ -90,6 +97,27 @@ type Engine struct {
 	mutedAt  time.Time
 	started  bool
 	closed   bool
+}
+
+// loadingTimeout is how long a stream asked for may take to start before
+// the app stops saying it is working on it. A device that is off, or a
+// stream that never buffers, would otherwise leave it waiting forever.
+const loadingTimeout = 30 * time.Second
+
+// loading is an entry the device was asked to play, and is not playing
+// yet. A device buffers a stream before it reports that it plays it, which
+// takes a moment, and the user is otherwise left wondering whether their
+// request was heard at all.
+type loading struct {
+	entry  playlist.Entry
+	since  time.Time
+	reason string
+}
+
+// describe says what is being waited for, as "Buffering on the device" or
+// "Requesting Bedroom…".
+func (l *loading) describe() string {
+	return l.reason
 }
 
 // Snapshot is what an Engine is doing, read at once so that a caller sees
@@ -106,6 +134,14 @@ type Snapshot struct {
 	Chosen     int
 	Volume     float64
 	Muted      bool
+
+	// Loading says an entry was asked for and the device is not playing it
+	// yet, and LoadingEntry is that entry. LoadingReason is what to tell
+	// the user, as "Requesting Living Room…" while the command is on its
+	// way or "Buffering…" once the device has taken it.
+	Loading       bool
+	LoadingEntry  string
+	LoadingReason string
 }
 
 // New makes an Engine, reading the playlist and listing the network
@@ -239,6 +275,20 @@ func (e *Engine) statusChanged(status cast.Status, err error) {
 	if time.Since(e.mutedAt) > 2*time.Second {
 		e.muted = status.Muted
 	}
+	// What the device reports decides whether the wait is over. Buffering
+	// is the wait itself, so it stays; only playing ends it. A device that
+	// reports a URL of its own, after a redirect, is playing all the same,
+	// and the status card shows what.
+	if e.loading != nil {
+		switch status.State {
+		case cast.StatePlaying:
+			e.stopLoadingLocked()
+		case cast.StateBuffering:
+			e.loading.reason = "Buffering on " + e.deviceNameLocked() + "…"
+		default:
+			e.loading.reason = "Starting " + e.loading.entry.Name + "…"
+		}
+	}
 	onStatus := e.opts.OnStatus
 	e.mu.Unlock()
 
@@ -292,6 +342,11 @@ func (e *Engine) Snapshot() Snapshot {
 	if e.castErr != nil {
 		s.Err = e.castErr.Error()
 	}
+	if e.loading != nil {
+		s.Loading = true
+		s.LoadingEntry = e.loading.entry.Name
+		s.LoadingReason = e.loading.reason
+	}
 	return s
 }
 
@@ -311,6 +366,7 @@ func (e *Engine) Choose(device cast.Device) {
 	e.castErr = nil
 	e.status = cast.Status{}
 	e.mu.Unlock()
+	e.clearLoading()
 	e.changed()
 
 	go func() {
@@ -381,6 +437,7 @@ func (e *Engine) Disconnect() {
 	e.status = cast.Status{}
 	e.connecting = false
 	e.mu.Unlock()
+	e.clearLoading()
 	e.changed()
 	if client != nil {
 		go client.Close()
@@ -395,13 +452,82 @@ func (e *Engine) controller() Controller {
 }
 
 // Play sends an entry's URL to the device being controlled.
+//
+// The device is not playing it yet when this returns: it takes a moment to
+// buffer a stream, and the state says so until it does. See the Loading
+// fields of Snapshot.
 func (e *Engine) Play(entry playlist.Entry) {
 	client := e.controller()
 	if client == nil {
 		e.setErr(cast.ErrNoClient)
 		return
 	}
+	e.beginLoading(entry)
 	client.Play(entry.URL, entry.ContentType)
+}
+
+// beginLoading records that an entry was asked for, so that the front end
+// can say so until the device plays it.
+func (e *Engine) beginLoading(entry playlist.Entry) {
+	e.mu.Lock()
+	if e.loadingTimer != nil {
+		e.loadingTimer.Stop()
+	}
+	e.loading = &loading{
+		entry:  entry,
+		since:  time.Now(),
+		reason: "Requesting " + e.deviceNameLocked() + "…",
+	}
+	// A device that never answers must not leave the app saying it is
+	// working on something forever.
+	e.loadingTimer = time.AfterFunc(loadingTimeout, e.loadingTimedOut)
+	e.mu.Unlock()
+	e.changed()
+}
+
+// loadingTimedOut says a stream asked for never started.
+func (e *Engine) loadingTimedOut() {
+	e.mu.Lock()
+	if e.loading == nil {
+		e.mu.Unlock()
+		return
+	}
+	name := e.loading.entry.Name
+	e.loading, e.loadingTimer = nil, nil
+	e.castErr = fmt.Errorf("%s did not start playing within %s", name, loadingTimeout)
+	e.mu.Unlock()
+	e.changed()
+}
+
+// clearLoading forgets a request the device has answered.
+func (e *Engine) clearLoading() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.stopLoadingLocked()
+}
+
+// stopLoadingLocked ends the wait and its timer. The caller holds mu.
+func (e *Engine) stopLoadingLocked() {
+	if e.loadingTimer != nil {
+		e.loadingTimer.Stop()
+		e.loadingTimer = nil
+	}
+	e.loading = nil
+}
+
+// deviceNameLocked names the device being controlled. The caller holds mu.
+func (e *Engine) deviceNameLocked() string {
+	for _, d := range e.devices {
+		if d.UUID == e.selected {
+			switch {
+			case d.Name != "":
+				return d.Name
+			case d.Addr != "":
+				return d.Addr
+			}
+		}
+	}
+	return "the device"
 }
 
 // PlayChosen plays the entry chosen in the playlist.
@@ -442,6 +568,7 @@ func (e *Engine) Resume() {
 
 // Stop stops the device's media.
 func (e *Engine) Stop() {
+	e.clearLoading()
 	if client := e.controller(); client != nil {
 		client.Stop()
 	}
@@ -554,6 +681,10 @@ func (e *Engine) Close() {
 	e.closed = true
 	client, stop := e.client, e.stopDisc
 	e.client, e.stopDisc = nil, nil
+	if e.loadingTimer != nil {
+		e.loadingTimer.Stop()
+		e.loadingTimer = nil
+	}
 	e.mu.Unlock()
 
 	if client != nil {

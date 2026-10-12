@@ -25,6 +25,9 @@ type fakeDevice struct {
 	paused   int
 	resumed  int
 	stopped  int
+	// quiet makes Play record the request without reporting that the
+	// device plays it, as a real device does while it buffers.
+	quiet bool
 }
 
 func (f *fakeDevice) report() {
@@ -37,6 +40,9 @@ func (f *fakeDevice) Status() cast.Status { return f.status }
 
 func (f *fakeDevice) Play(url, contentType string) {
 	f.played = append(f.played, url)
+	if f.quiet {
+		return
+	}
 	f.status.State = cast.StatePlaying
 	f.status.URL = url
 	f.report()

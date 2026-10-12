@@ -31,6 +31,9 @@ type fakeDevice struct {
 	paused   int
 	resumed  int
 	stopped  int
+	// quiet makes Play record the request without reporting that the
+	// device plays it, as a real device does while it buffers.
+	quiet bool
 }
 
 // playedURLs returns what the device was asked to play.
@@ -65,6 +68,18 @@ func (f *fakeDevice) Play(url, contentType string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.played = append(f.played, url)
+	if f.quiet {
+		return
+	}
+	f.status.State = cast.StatePlaying
+	f.status.URL = url
+	f.report()
+}
+
+// catchUp has the device report that it plays url, after a quiet Play.
+func (f *fakeDevice) catchUp(url string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.status.State = cast.StatePlaying
 	f.status.URL = url
 	f.report()

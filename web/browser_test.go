@@ -407,3 +407,69 @@ func TestBrowserBasicAuth(t *testing.T) {
 		t.Errorf("the state holds %d devices", len(state.Devices))
 	}
 }
+
+// TestBrowserLoadingAndPlayButton checks the two things a user needs when
+// a device is slow to start a stream: that the app says it is working on
+// it, and that playing does not depend on a double click, which a
+// touchpad's light taps do not always reach a browser as.
+func TestBrowserLoadingAndPlayButton(t *testing.T) {
+	device := &fakeDevice{quiet: true}
+	base := newBrowserServer(t, device, 3)
+	d := newDriver(t)
+
+	d.goTo(base + "/")
+	d.waitFor("return document.querySelectorAll('#playlist li').length === 3", "the playlist")
+
+	if d.evalBool("return document.querySelector('.loading') !== null") {
+		t.Fatal("the app waits for something before anything was asked for")
+	}
+
+	// The Play button of the second row starts it, with one click.
+	clicked := d.evalBool(`
+		const b = document.querySelectorAll('#playlist li')[1].querySelector('button.play');
+		if (!b) return false;
+		b.click();
+		return true;
+	`)
+	if !clicked {
+		t.Fatal("a row has no Play button")
+	}
+
+	// The wait is reported at once, while the device says nothing.
+	d.waitFor("return document.querySelector('.loading') !== null", "the loading notice")
+	reason := d.evalString("return document.querySelector('.loading').textContent.trim()")
+	if reason == "" {
+		t.Error("the notice says nothing")
+	}
+
+	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
+	if got := device.playedURLs()[0]; got != "http://radio2.example/stream.mp3" {
+		t.Errorf("played %q, want the second entry", got)
+	}
+
+	// The device catching up ends the notice.
+	device.catchUp("http://radio2.example/stream.mp3")
+	d.waitFor("return document.querySelector('.loading') === null", "the notice to go")
+}
+
+// TestBrowserPlayButtonDoesNotChooseTheRow checks that the button plays
+// without also choosing the row, which is the row's own click.
+func TestBrowserPlayButtonDoesNotChooseTheRow(t *testing.T) {
+	device := &fakeDevice{}
+	base := newBrowserServer(t, device, 3)
+	d := newDriver(t)
+
+	d.goTo(base + "/")
+	d.waitFor("return document.querySelectorAll('#playlist li').length === 3", "the playlist")
+
+	// Choose the first row, then play the third with its button.
+	d.eval("document.querySelectorAll('#playlist li')[0].click()")
+	d.waitFor("return document.querySelectorAll('#playlist li.chosen').length === 1", "a chosen row")
+
+	d.eval("document.querySelectorAll('#playlist li')[2].querySelector('button.play').click()")
+	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
+
+	if got := d.evalString("return document.querySelector('#playlist li.chosen .name').textContent.trim()"); got != "station1" {
+		t.Errorf("playing a row chose it: the chosen row is now %q", got)
+	}
+}

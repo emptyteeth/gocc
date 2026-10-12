@@ -125,6 +125,11 @@ type stateDTO struct {
 	Chosen      int         `json:"chosen"`
 	Volume      float64     `json:"volume"`
 	Muted       bool        `json:"muted"`
+
+	// Loading says an entry was asked for and the device is not playing it
+	// yet, and LoadingReason is what to tell the user meanwhile.
+	Loading       bool   `json:"loading"`
+	LoadingReason string `json:"loadingReason"`
 }
 
 type deviceDTO struct {
@@ -144,23 +149,25 @@ type entryDTO struct {
 // snapshotOf turns an engine snapshot into what the page reads.
 func snapshotOf(s core.Snapshot) stateDTO {
 	dto := stateDTO{
-		Interfaces:  make([]string, 0, len(s.Interfaces)),
-		Iface:       s.Iface,
-		Selected:    s.Selected,
-		Connecting:  s.Connecting,
-		Description: s.Status.Describe(),
-		State:       string(s.Status.State),
-		Playing:     s.Status.Playing(),
-		Idle:        s.Status.State == cast.StateIdle,
-		Title:       s.Status.Title,
-		Artist:      s.Status.Artist,
-		URL:         s.Status.URL,
-		Error:       s.Err,
-		Devices:     make([]deviceDTO, 0, len(s.Devices)),
-		Playlist:    make([]entryDTO, 0, len(s.Playlist)),
-		Chosen:      s.Chosen,
-		Volume:      s.Volume,
-		Muted:       s.Muted,
+		Interfaces:    make([]string, 0, len(s.Interfaces)),
+		Iface:         s.Iface,
+		Selected:      s.Selected,
+		Connecting:    s.Connecting,
+		Description:   s.Status.Describe(),
+		State:         string(s.Status.State),
+		Playing:       s.Status.Playing(),
+		Idle:          s.Status.State == cast.StateIdle,
+		Title:         s.Status.Title,
+		Artist:        s.Status.Artist,
+		URL:           s.Status.URL,
+		Error:         s.Err,
+		Devices:       make([]deviceDTO, 0, len(s.Devices)),
+		Playlist:      make([]entryDTO, 0, len(s.Playlist)),
+		Chosen:        s.Chosen,
+		Volume:        s.Volume,
+		Muted:         s.Muted,
+		Loading:       s.Loading,
+		LoadingReason: s.LoadingReason,
 	}
 	for _, iface := range s.Interfaces {
 		dto.Interfaces = append(dto.Interfaces, iface.Name)

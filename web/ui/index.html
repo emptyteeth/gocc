@@ -85,7 +85,21 @@
   ul.list li + li { margin-top: 2px; }
   ul.list li:hover { background: var(--surface-hover); }
   ul.list li.chosen { background: var(--accent); color: var(--accent-text); }
-  ul.list li .name { display: flex; align-items: center; gap: 6px; }
+  ul.list li .top { display: flex; align-items: center; gap: 6px; }
+  ul.list li .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul.list li .play {
+    flex: none; margin-left: auto; padding: 2px 8px; font-size: 12px;
+    line-height: 1.4; border-radius: 6px;
+  }
+  ul.list li.chosen .play { color: var(--accent-text); border-color: var(--accent-text); background: transparent; }
+  ul.list li.chosen .play:hover { background: rgba(255,255,255,.18); }
+  .loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .loading .dot {
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: .35; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .loading .dot { animation: none; opacity: .8; } }
   ul.list li .sub { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   ul.list li.chosen .sub { color: var(--accent-text); opacity: .85; }
   .empty { color: var(--muted); font-size: 12px; padding: 8px; }
@@ -292,8 +306,10 @@ function renderControl() {
   const track = [state.artist, state.title].filter(Boolean).join(" — ");
   if (track) card.append(el("div", { class: "track" }, track));
   if (state.url) card.append(el("div", { class: "url" }, state.url));
-  if (state.idle) {
-    card.append(el("div", { class: "url" }, "Nothing is playing. Double-click an entry of the playlist."));
+  // The hint is for a device the user has not asked anything of; it would
+  // only be noise while the wait for a stream is on.
+  if (state.idle && !state.loading) {
+    card.append(el("div", { class: "url" }, "Nothing is playing. Double-click an entry, or press its Play button."));
   }
   nodes.push(card);
 
@@ -302,6 +318,16 @@ function renderControl() {
     disabled(button("Stop", () => api("POST", "/api/stop")), state.idle),
     button("Refresh", () => api("POST", "/api/refresh")),
   ]));
+
+  // A device buffers a stream before it plays it. Say what is being waited
+  // for, so that a request that was heard does not look like one that was
+  // not.
+  if (state.loading) {
+    nodes.push(el("div", { class: "loading" }, [
+      el("span", { class: "dot" }),
+      state.loadingReason || "Starting…",
+    ]));
+  }
 
   // The volume slider and the mute box are kept as they are, so that a
   // state arriving while the slider is being dragged does not move the
@@ -326,9 +352,21 @@ function renderPlaylist() {
   } else {
     replace(list, state.playlist.map((entry, i) => {
       const li = el("li", { class: i === state.chosen ? "chosen" : "" });
-      li.title = "Double-click to play";
+      li.title = "Click to choose, or use Play to start it";
+      // A button as well as the double click: a touchpad's light taps do
+      // not always reach a browser as a double click, and a button always
+      // works, by pointer or by keyboard.
+      const play = el("button", { class: "play", type: "button", title: "Play " + entry.name }, "Play");
+      play.onclick = (event) => {
+        // The row's own click chooses it: playing is this button's job.
+        event.stopPropagation();
+        act(() => api("POST", "/api/play", { index: i }))();
+      };
       li.append(
-        el("span", { class: "name" }, (entry.playing ? "▶ " : "") + entry.name),
+        el("span", { class: "top" }, [
+          el("span", { class: "name" }, (entry.playing ? "▶ " : "") + entry.name),
+          play,
+        ]),
         el("span", { class: "sub" }, entry.url),
       );
       li.onclick = act(() => api("POST", "/api/playlist/" + i + "/choose"));

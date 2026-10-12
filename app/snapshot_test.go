@@ -54,15 +54,12 @@ func TestRenderSnapshot(t *testing.T) {
 	engine.Choose(testDevice)
 	waitFor(t, func() bool { return !engine.Snapshot().Connecting })
 
-	device.status = cast.Status{
-		State:  cast.StatePlaying,
-		Title:  "Morning Jazz",
-		Artist: "Radio Jazz",
-		URL:    "http://jazz.example/stream",
-		Volume: 0.62,
-	}
-	device.report()
+	// The device has just been asked for an entry and is buffering it: the
+	// window should show that it is working on it.
 	engine.ChooseEntry(1)
+	device.quiet = true
+	engine.PlayIndex(1)
+	waitFor(t, func() bool { return engine.Snapshot().Loading })
 
 	a := &App{engine: engine, deviceSel: 0}
 	a.volume, a.volumeAt = 0.62, time.Now()

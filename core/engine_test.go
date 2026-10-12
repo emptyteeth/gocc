@@ -1,6 +1,9 @@
 package core
 
 import (
+	"context"
+	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +24,10 @@ type fakeDevice struct {
 	resumed  int
 	stopped  int
 	closed   int
+	// quiet makes Play record the request without reporting that the
+	// device plays it, as a real device does while it buffers. The test
+	// then decides when the device catches up.
+	quiet bool
 }
 
 // report tells the engine what the device is doing now, as the real
@@ -36,6 +43,9 @@ func (f *fakeDevice) Status() cast.Status { return f.status }
 func (f *fakeDevice) Play(url, contentType string) {
 	f.played = append(f.played, url)
 	f.types = append(f.types, contentType)
+	if f.quiet {
+		return
+	}
 	f.status.State = cast.StatePlaying
 	f.status.URL = url
 	f.report()
@@ -82,6 +92,10 @@ func newTestEngine(t *testing.T, entries ...playlist.Entry) (*Engine, *fakeDevic
 		NewController: func(cast.Device, func(cast.Status, error)) (Controller, error) {
 			return device, nil
 		},
+		Discover: func(_ context.Context, _ *net.Interface, onDevices func([]cast.Device)) (func(), error) {
+			onDevices([]cast.Device{testDevice})
+			return func() {}, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +108,7 @@ func newTestEngine(t *testing.T, entries ...playlist.Entry) (*Engine, *fakeDevic
 		}
 	}
 	device.onChange = e.statusChanged
+	e.Start(context.Background())
 	e.Choose(testDevice)
 	waitFor(t, func() bool { return e.Snapshot().Selected == testDevice.UUID && !e.Snapshot().Connecting })
 	return e, device
@@ -275,4 +290,88 @@ func entryNames(e *Engine) string {
 		names += entry.Name
 	}
 	return names
+}
+
+func TestLoadingIsReportedUntilTheDevicePlays(t *testing.T) {
+	e, device := newTestEngine(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
+	device.quiet = true
+
+	// Asking for an entry says so at once, before the device has answered.
+	e.PlayIndex(0)
+	waitFor(t, func() bool { return e.Snapshot().Loading })
+	s := e.Snapshot()
+	if s.LoadingEntry != "radio1" {
+		t.Errorf("loading entry = %q, want radio1", s.LoadingEntry)
+	}
+	if s.LoadingReason == "" {
+		t.Error("no reason is given for the wait")
+	}
+	if !strings.Contains(s.LoadingReason, "Living Room") {
+		t.Errorf("the reason does not name the device: %q", s.LoadingReason)
+	}
+
+	// The device reporting that it plays the entry ends the wait.
+	device.status = cast.Status{State: cast.StatePlaying, URL: "http://radio1.com/1.mp3"}
+	device.report()
+	waitFor(t, func() bool { return !e.Snapshot().Loading })
+}
+
+func TestLoadingEndsWhenTheDevicePlaysSomethingElse(t *testing.T) {
+	// A device that reports a URL of its own, after a redirect, is taken
+	// to be playing what was asked for rather than left waiting.
+	e, device := newTestEngine(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
+	device.quiet = true
+	e.PlayIndex(0)
+	waitFor(t, func() bool { return e.Snapshot().Loading })
+
+	device.status = cast.Status{State: cast.StatePlaying, URL: "http://cdn.example/redirected"}
+	device.report()
+	waitFor(t, func() bool { return !e.Snapshot().Loading })
+}
+
+func TestLoadingSurvivesADeviceStillBuffering(t *testing.T) {
+	e, device := newTestEngine(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
+	device.quiet = true
+	e.PlayIndex(0)
+	waitFor(t, func() bool { return e.Snapshot().Loading })
+
+	// A device that says it is idle is not playing it yet.
+	device.status = cast.Status{State: cast.StateIdle}
+	device.report()
+	time.Sleep(50 * time.Millisecond)
+	if !e.Snapshot().Loading {
+		t.Error("the wait ended while the device reported nothing playing")
+	}
+	if got := e.Snapshot().LoadingReason; !strings.Contains(got, "radio1") {
+		t.Errorf("the reason does not name the entry: %q", got)
+	}
+}
+
+func TestStopEndsTheWait(t *testing.T) {
+	e, device := newTestEngine(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
+	device.quiet = true
+	e.PlayIndex(0)
+	waitFor(t, func() bool { return e.Snapshot().Loading })
+	e.Stop()
+	waitFor(t, func() bool { return !e.Snapshot().Loading })
+}
+
+func TestDisconnectEndsTheWait(t *testing.T) {
+	e, device := newTestEngine(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
+	device.quiet = true
+	e.PlayIndex(0)
+	waitFor(t, func() bool { return e.Snapshot().Loading })
+	e.Disconnect()
+	waitFor(t, func() bool { return !e.Snapshot().Loading })
+}
+
+func TestPlayingWithoutADeviceDoesNotWait(t *testing.T) {
+	e, _ := newTestEngine(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
+	e.Disconnect()
+	e.ChooseEntry(0)
+	e.PlayChosen()
+	waitFor(t, func() bool { return e.Snapshot().Err != "" })
+	if e.Snapshot().Loading {
+		t.Error("the app waits for a stream it could not have asked for")
+	}
 }
