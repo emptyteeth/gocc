@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/free/gocc/playlist"
+
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
@@ -42,12 +44,17 @@ type App struct {
 	newType  string
 
 	// The right column: which pane shows, and what belongs to each.
-	pane            int
-	favList         ui.ListState
-	favChosen       int
-	grid            ui.GridState
-	stationSel      int
-	stationQuery    string
+	pane      int
+	favList   ui.ListState
+	favChosen int
+	// favShown is the favorites the search left, which is what the list
+	// shows: favChosen is a row of it, not of the whole list.
+	favShown   []playlist.Entry
+	grid       ui.GridState
+	stationSel int
+	// search is what the field at the top of the right column holds. It
+	// narrows the favorites at once, and the catalogue after a pause.
+	search          string
 	searchChangedAt time.Time
 	countriesAsked  bool
 

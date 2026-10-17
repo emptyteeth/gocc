@@ -641,3 +641,121 @@ func TestSavedCardShowsAFilledHeart(t *testing.T) {
 		t.Errorf("the card does not show the saved mark: %v", tt.Texts())
 	}
 }
+
+func TestSearchFieldIsOnBothPanes(t *testing.T) {
+	a, _, _ := newTestAppWithSource(t,
+		playlist.Entry{Name: "Jazz FM", URL: "http://jazz.example/1.mp3"},
+		playlist.Entry{Name: "Rock Radio", URL: "http://rock.example/2.mp3"},
+	)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	// The favorites pane has the search field at the top.
+	if !found(tt, "Search favorites") {
+		t.Fatalf("no search field on the favorites: %v", tt.Texts())
+	}
+
+	// So does the catalogue.
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !found(tt, "Search stations") {
+		t.Fatalf("no search field on the catalogue: %v", tt.Texts())
+	}
+
+	// The field is at the top row, to the right of the segmented control.
+	seg, _ := tt.Find("Browse")
+	field, _ := tt.Find("Search stations")
+	if field.Y > seg.Y+seg.H+8 {
+		t.Errorf("the search field is not on the tab row: tab Y=%v field Y=%v", seg.Y, field.Y)
+	}
+	if field.X <= seg.X {
+		t.Errorf("the search field is not to the right of the tabs: tab X=%v field X=%v", seg.X, field.X)
+	}
+}
+
+func TestFavoritesSearchNarrowsTheList(t *testing.T) {
+	a, _, _ := newTestAppWithSource(t,
+		playlist.Entry{Name: "Jazz FM", URL: "http://jazz.example/1.mp3"},
+		playlist.Entry{Name: "Rock Radio", URL: "http://rock.example/2.mp3"},
+	)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	if !tt.HasText("Jazz FM") || !tt.HasText("Rock Radio") {
+		t.Fatalf("the favorites do not show: %v", tt.Texts())
+	}
+
+	tt.Click("Search favorites")
+	tt.Type("jazz")
+	tt.Frame()
+
+	if !tt.HasText("Jazz FM") {
+		t.Errorf("the matching favorite is gone: %v", tt.Texts())
+	}
+	if tt.HasText("Rock Radio") {
+		t.Errorf("the non-matching favorite still shows: %v", tt.Texts())
+	}
+
+	// Clearing the field brings them back.
+	tt.Key(ui.Cmd, ui.KeyA)
+	tt.TypeKey(0, ui.KeyBackspace, "")
+	tt.Frame()
+	if !tt.HasText("Rock Radio") {
+		t.Errorf("clearing the search did not restore the list: %v", tt.Texts())
+	}
+}
+
+func TestFavoritesSearchPlaysTheRightRow(t *testing.T) {
+	a, device, _ := newTestAppWithSource(t,
+		playlist.Entry{Name: "Jazz FM", URL: "http://jazz.example/1.mp3"},
+		playlist.Entry{Name: "Rock Radio", URL: "http://rock.example/2.mp3"},
+	)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	tt.Click("Search favorites")
+	tt.Type("rock")
+	tt.Frame()
+	if !tt.HasText("Rock Radio") || tt.HasText("Jazz FM") {
+		t.Fatalf("the filter did not work: %v", tt.Texts())
+	}
+
+	// The only row left is the second favorite; playing it must use the
+	// URL of the whole list's second entry, not the filtered first.
+	if err := tt.Click("Rock Radio"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tt.Click("Play favorite"); err != nil {
+		t.Fatal(err)
+	}
+	if len(device.played) != 1 || device.played[0] != "http://rock.example/2.mp3" {
+		t.Fatalf("played %v, want the Rock Radio URL", device.played)
+	}
+}
+
+func TestBrowseCountryOrderRefreshShareARow(t *testing.T) {
+	a, _, _ := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1400, 800)
+
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Countries) > 0 })
+	tt.Frame()
+
+	country, ok := tt.Find("Country")
+	if !ok {
+		t.Fatalf("no country picker: %v", tt.Texts())
+	}
+	votes, _ := tt.Find("Votes")
+	refresh, _ := tt.Find("Refresh catalogue")
+	for _, tc := range []struct {
+		name string
+		y    float32
+	}{{"Votes", votes.Y}, {"Refresh", refresh.Y}} {
+		if d := tc.y - country.Y; d > 24 || d < -24 {
+			t.Errorf("%s is not on the country's row: country Y=%v %s Y=%v",
+				tc.name, country.Y, tc.name, tc.y)
+		}
+	}
+}

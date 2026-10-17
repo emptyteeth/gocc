@@ -135,7 +135,7 @@ func deviceName(device cast.Device) string {
 // controlPane shows what the chosen device is doing, and the controls for
 // it: play and pause, stop, and the volume.
 func (a *App) controlPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
-	ui.Column(c).Grow(2).FillHeight().Padding(16).Gap(12).Children(func() {
+	ui.Column(c).Grow(2).FillHeight().Padding(16).Gap(8).Children(func() {
 		switch {
 		case s.Selected == "":
 			a.emptyControlPane(c, t)

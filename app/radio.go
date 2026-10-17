@@ -45,11 +45,13 @@ var browseOrders = []struct {
 }
 
 // rightPane draws the right column: the favorites, or the catalogue to
-// browse, chosen by the segmented control at its top.
+// browse, chosen by the segmented control at its top, with one search
+// field for both of them at the end of that row.
 func (a *App) rightPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	ui.Column(c).Grow(2).Basis(0).MinHeight(0).FillHeight().Padding(12).Gap(8).Children(func() {
-		ui.Row(c).Children(func() {
+		ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
 			ui.Segmented(c, &a.pane, "Favorites", "Browse").Label("Right column")
+			a.searchBox(c, t, s)
 		})
 		if a.pane == paneFavorites {
 			a.favoritesPane(c, t, s)
@@ -64,33 +66,40 @@ func (a *App) favoritesPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "Favorites").FontSize(15).Bold().Grow(1)
 		ui.Button(c, "Play").Label("Play favorite").Tooltip("Play the chosen favorite").
-			Disabled(a.favChosen < 0).OnClick(func() { a.engine.PlayFavorite(a.favChosen) })
+			Disabled(a.favChosen < 0).OnClick(func() { a.playFavoriteRow() })
 		ui.Button(c, "Remove").Label("Remove favorite").Tooltip("Take the favorite out").
-			Disabled(a.favChosen < 0).OnClick(func() { a.engine.RemoveFavorite(a.favChosen) })
+			Disabled(a.favChosen < 0).OnClick(func() { a.removeFavoriteRow() })
 	})
 
-	if a.favChosen != s.Chosen && false {
-		// (the favorites have their own choice; nothing to sync)
-	}
-	a.favList.Key = func(i int) any { return s.Favorites[i].URL }
-	a.favList.Label = func(i int) string { return s.Favorites[i].Name }
+	// The search field narrows the favorites as it is typed. It is the
+	// same field the catalogue uses, so the two panes share one word.
+	favs := filterFavorites(s.Favorites, a.search)
+	// The list writes the chosen row in place, so it points at a field of
+	// the app; the filtered list's row maps back to the favorite it shows.
+	a.favShown = favs
+	a.favList.Key = func(i int) any { return favs[i].URL }
+	a.favList.Label = func(i int) string { return favs[i].Name }
 	a.favList.Selected = &a.favChosen
 
-	list := ui.List(c, &a.favList, len(s.Favorites), func(i int) {
-		a.favoriteRow(c, t, s.Favorites[i], a.favChosen == i, s.Status.URL)
+	list := ui.List(c, &a.favList, len(favs), func(i int) {
+		a.favoriteRow(c, t, favs[i], a.favChosen == i, s.Status.URL)
 	}).Grow(1)
 	list.Children(func() {
-		if len(s.Favorites) == 0 {
+		switch {
+		case len(s.Favorites) == 0:
 			ui.Column(c).Padding(8).Gap(4).Children(func() {
 				ui.Text(c, "No favorites yet.").TextColor(t.TextMuted).FontSize(12)
 				ui.Text(c, "Save a station from Browse, or add a URL below.").
 					TextColor(t.TextMuted).FontSize(11)
 			})
+		case len(favs) == 0:
+			ui.Text(c, "No favorites match the search.").
+				TextColor(t.TextMuted).FontSize(12).Padding(8)
 		}
 	})
 	// A double click plays the favorite.
-	if list.Submitted() && a.favChosen >= 0 {
-		a.engine.PlayFavorite(a.favChosen)
+	if list.Submitted() && a.favChosen >= 0 && a.favChosen < len(favs) {
+		a.engine.PlayFavorite(a.favoriteIndex(favs[a.favChosen].URL))
 	}
 
 	a.favoriteForm(c, t)
@@ -151,8 +160,9 @@ func (a *App) browsePane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	}
 
 	ui.Column(c).Gap(6).Children(func() {
-		a.countryPicker(c, t, s)
+		// The country, the order and the refresh share one row.
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			a.countryPicker(c, t, s)
 			order := a.orderIndex(s.Order)
 			if ui.Segmented(c, &order, orderLabels()...).Label("Order").Changed() {
 				a.engine.SetOrder(browseOrders[order].order)
@@ -166,7 +176,6 @@ func (a *App) browsePane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 					a.engine.LoadStations()
 				})
 		})
-		a.searchBox(c, t)
 	})
 
 	if s.Searching {
@@ -203,7 +212,9 @@ func (a *App) countryPicker(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	}
 	// A combobox rather than a select: 250 countries are more than a
 	// drop-down one scrolls through comfortably, and typing narrows them.
-	box := ui.Combobox(c, &pick, names).Label("Country")
+	// It takes the room left of the row, between the row's start and the
+	// order control.
+	box := ui.Combobox(c, &pick, names).Label("Country").Grow(1).MaxWidth(320)
 	if box.Changed() {
 		for i, name := range names {
 			if name == pick {
@@ -214,19 +225,26 @@ func (a *App) countryPicker(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	}
 }
 
-// searchBox searches the catalogue by name, after the typing pauses.
-func (a *App) searchBox(c *ui.Context, t *ui.Theme) {
-	ui.Row(c).Children(func() {
-		field := ui.SearchField(c, &a.stationQuery).Grow(1).Label("Search stations")
-		if field.Changed() {
+// searchBox is the one search field of the right column. In the favorites
+// it narrows the list as it is typed, which needs no network; in the
+// catalogue it waits for the typing to pause before asking the service.
+func (a *App) searchBox(c *ui.Context, t *ui.Theme, s core.Snapshot) {
+	ui.Row(c).Grow(1).Children(func() {
+		label := "Search stations"
+		if a.pane == paneFavorites {
+			label = "Search favorites"
+		}
+		field := ui.SearchField(c, &a.search).Grow(1).Label(label)
+		if field.Changed() && a.pane == paneBrowse {
 			a.searchChangedAt = c.Now()
 			// After only asks for another frame; the search itself runs
 			// in a later frame, once the typing has stopped.
 			c.After(300 * time.Millisecond)
 		}
-		if !a.searchChangedAt.IsZero() && c.Now().Sub(a.searchChangedAt) >= 300*time.Millisecond {
+		if a.pane == paneBrowse && !a.searchChangedAt.IsZero() &&
+			c.Now().Sub(a.searchChangedAt) >= 300*time.Millisecond {
 			a.searchChangedAt = time.Time{}
-			a.engine.SetStationQuery(a.stationQuery)
+			a.engine.SetStationQuery(a.search)
 		}
 	})
 }
@@ -539,4 +557,53 @@ func fetchBitmap(url string) (*ui.Bitmap, error) {
 		return nil, err
 	}
 	return ui.DecodeBitmap(data)
+}
+
+// filterFavorites keeps the favorites whose name or URL holds the search
+// word, ignoring case. An empty word keeps them all.
+func filterFavorites(favorites []playlist.Entry, search string) []playlist.Entry {
+	word := strings.ToLower(strings.TrimSpace(search))
+	if word == "" {
+		return favorites
+	}
+	out := make([]playlist.Entry, 0, len(favorites))
+	for _, entry := range favorites {
+		if strings.Contains(strings.ToLower(entry.Name), word) ||
+			strings.Contains(strings.ToLower(entry.URL), word) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// favoriteIndex is the position of the favorite with this URL in the whole
+// list, for playing a row of the filtered one.
+func (a *App) favoriteIndex(url string) int {
+	for i, entry := range a.engine.Snapshot().Favorites {
+		if entry.URL == url {
+			return i
+		}
+	}
+	return -1
+}
+
+// playFavoriteRow plays the favorite the list shows as chosen. The row is
+// of the filtered list, so it maps back to the whole one first.
+func (a *App) playFavoriteRow() {
+	if a.favChosen < 0 || a.favChosen >= len(a.favShown) {
+		return
+	}
+	if i := a.favoriteIndex(a.favShown[a.favChosen].URL); i >= 0 {
+		a.engine.PlayFavorite(i)
+	}
+}
+
+// removeFavoriteRow takes out the favorite the list shows as chosen.
+func (a *App) removeFavoriteRow() {
+	if a.favChosen < 0 || a.favChosen >= len(a.favShown) {
+		return
+	}
+	if i := a.favoriteIndex(a.favShown[a.favChosen].URL); i >= 0 {
+		a.engine.RemoveFavorite(i)
+	}
 }
