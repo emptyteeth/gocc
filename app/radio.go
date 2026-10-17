@@ -249,7 +249,9 @@ func (a *App) stationGrid(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	a.grid.Key = func(i int) any { return s.Stations[i].UUID }
 	a.grid.Label = func(i int) string { return s.Stations[i].Name }
 
-	grid := ui.GridView(c, &a.grid, len(s.Stations), 150, 132, func(i int) {
+	// Square cards: the cell is as tall as the column is wide, so the
+	// picture fills it and the text floats over its bottom.
+	grid := ui.GridView(c, &a.grid, len(s.Stations), 150, 164, func(i int) {
 		a.stationCard(c, t, i, s.Stations[i], s.Status.URL)
 	}).Grow(1)
 	// A double click, or Enter, plays the station.
@@ -258,61 +260,71 @@ func (a *App) stationGrid(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	}
 }
 
-// stationCard draws one station: its logo, its name, and what it plays.
-// The Play and Save buttons float over the logo, and only while the
-// pointer is on the card, so that the card is a picture until it is used.
+// stationCard draws one station as a square: its logo fills the card,
+// and its name and details float over the bottom of the picture. The Play
+// and Save buttons float over the top corner, and only while the pointer
+// is on the card, so that the card is a picture until it is used.
 func (a *App) stationCard(c *ui.Context, t *ui.Theme, i int, station radiobrowser.Station, playingURL string) {
 	playing := station.URLToPlay() != "" && station.URLToPlay() == playingURL
 	saved := a.engine.IsFavorite(station.URLToPlay())
 	chosen := a.stationSel == i
 
-	ui.Column(c).Gap(4).Fill().Padding(4).Radius(6).Background(t.Surface).Children(func() {
-		logo := ui.Box(c).Height(80).Radius(6).Clip().Background(t.SurfaceHover)
-		// The buttons show while the pointer is on the card, and on the
-		// card the keyboard chose, which cannot be hovered.
-		showButtons := logo.Hovered() || chosen
-		logo.Children(func() {
-			if bitmap := a.stationLogo(station); bitmap != nil {
-				ui.Image(c, bitmap).Fit(ui.Cover).Grow(1)
-			} else if !showButtons {
-				// No logo yet, or none to be had: the station's initials,
-				// as an avatar does. They give way to the buttons, which
-				// would otherwise sit on them.
-				ui.Text(c, initialsOf(station.Name)).FontSize(26).Bold().
-					TextColor(t.TextMuted).AlignSelf(ui.Center).Margin(0, ui.Auto)
-			}
-			if showButtons {
-				ui.Row(c).Absolute().Top(4).Right(4).Gap(4).Children(func() {
-					overlayButton(c, playIcon, "Play "+station.Name, "Play", func() {
-						a.engine.PlayStation(i)
-					})
-					label := "Save " + station.Name
-					if saved {
-						label = "Saved " + station.Name
-					}
-					icon := heartIcon
-					if saved {
-						icon = heartFilledIcon
-					}
-					overlayButton(c, icon, label, "Save to favorites", func() {
-						if err := a.engine.ToggleFavorite(station.URLToPlay()); err != nil {
-							a.engine.ReportError(err)
-						}
-					})
-				})
-			}
+	card := ui.Box(c).Fill().Radius(6).Clip().Background(t.SurfaceHover)
+	// The buttons show while the pointer is on the card, and on the card
+	// the keyboard chose, which cannot be hovered.
+	showButtons := card.Hovered() || chosen
+	card.Children(func() {
+		if bitmap := a.stationLogo(station); bitmap != nil {
+			ui.Image(c, bitmap).Fit(ui.Cover).Fill()
+		} else if !showButtons {
+			// No logo yet, or none to be had: the station's initials,
+			// centered on the empty card.
+			ui.Text(c, initialsOf(station.Name)).FontSize(30).Bold().
+				TextColor(t.TextMuted).AlignSelf(ui.Center).Margin(0, ui.Auto)
+		}
+
+		// A shade behind the text, so that it stays readable over any
+		// picture: clear at the top, dark at the bottom. It is deep
+		// enough to carry white text over a bright logo too.
+		ui.Box(c).Absolute().Left(0).Right(0).Bottom(0).Height(60).
+			Gradient(ui.RGBA(0, 0, 0, 0), ui.RGBA(0, 0, 0, 0.88), 180).
+			PassThrough()
+
+		ui.Column(c).Absolute().Left(8).Right(8).Bottom(6).Gap(1).Children(func() {
+			ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
+				if playing {
+					ui.Text(c, "▶").FontSize(10).TextColor(ui.RGB(255, 255, 255))
+				}
+				ui.Text(c, station.Name).FontSize(12).Grow(1).MaxLines(1).
+					TextColor(ui.RGB(255, 255, 255))
+				if saved {
+					ui.Text(c, "♥").FontSize(11).TextColor(ui.RGB(255, 255, 255))
+				}
+			})
+			ui.Text(c, stationDetail(station)).FontSize(10).
+				TextColor(ui.RGBA(255, 255, 255, 0.78)).SingleLine()
 		})
 
-		ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-			if playing {
-				ui.Text(c, "▶").FontSize(10).TextColor(t.Accent)
-			}
-			ui.Text(c, station.Name).FontSize(12).Grow(1).MaxLines(1)
-			if saved {
-				ui.Text(c, "♥").FontSize(11).TextColor(t.Accent)
-			}
-		})
-		ui.Text(c, stationDetail(station)).FontSize(10).TextColor(t.TextMuted).SingleLine()
+		if showButtons {
+			ui.Row(c).Absolute().Top(6).Right(6).Gap(4).Children(func() {
+				overlayButton(c, playIcon, "Play "+station.Name, "Play", func() {
+					a.engine.PlayStation(i)
+				})
+				label := "Save " + station.Name
+				if saved {
+					label = "Saved " + station.Name
+				}
+				icon := heartIcon
+				if saved {
+					icon = heartFilledIcon
+				}
+				overlayButton(c, icon, label, "Save to favorites", func() {
+					if err := a.engine.ToggleFavorite(station.URLToPlay()); err != nil {
+						a.engine.ReportError(err)
+					}
+				})
+			})
+		}
 	})
 }
 
