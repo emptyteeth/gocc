@@ -15,6 +15,19 @@ import (
 	"github.com/free/gocc/radiobrowser"
 )
 
+// The icons of a station card, drawn in currentColor so that the button's
+// text color paints them, as an icon set does.
+var (
+	playIcon        = cardIcon(`<path d="M8 5v14l11-7z" fill="currentColor" stroke="none"/>`)
+	heartIcon       = cardIcon(`<path d="M12 20.5 4.7 13.3a4.8 4.8 0 0 1 6.8-6.8l.5.5.5-.5a4.8 4.8 0 0 1 6.8 6.8z"/>`)
+	heartFilledIcon = cardIcon(`<path d="M12 20.5 4.7 13.3a4.8 4.8 0 0 1 6.8-6.8l.5.5.5-.5a4.8 4.8 0 0 1 6.8 6.8z" fill="currentColor"/>`)
+)
+
+// cardIcon parses a 24×24 icon drawn in currentColor.
+func cardIcon(shapes string) *ui.SVG {
+	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` + shapes + `</svg>`))
+}
+
 // The panes of the right column.
 const (
 	paneFavorites = iota
@@ -236,8 +249,8 @@ func (a *App) stationGrid(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 	a.grid.Key = func(i int) any { return s.Stations[i].UUID }
 	a.grid.Label = func(i int) string { return s.Stations[i].Name }
 
-	grid := ui.GridView(c, &a.grid, len(s.Stations), 150, 172, func(i int) {
-		a.stationCard(c, t, s.Stations[i], s.Status.URL)
+	grid := ui.GridView(c, &a.grid, len(s.Stations), 150, 132, func(i int) {
+		a.stationCard(c, t, i, s.Stations[i], s.Status.URL)
 	}).Grow(1)
 	// A double click, or Enter, plays the station.
 	if grid.Submitted() && a.stationSel >= 0 {
@@ -246,49 +259,69 @@ func (a *App) stationGrid(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 }
 
 // stationCard draws one station: its logo, its name, and what it plays.
-func (a *App) stationCard(c *ui.Context, t *ui.Theme, station radiobrowser.Station, playingURL string) {
+// The Play and Save buttons float over the logo, and only while the
+// pointer is on the card, so that the card is a picture until it is used.
+func (a *App) stationCard(c *ui.Context, t *ui.Theme, i int, station radiobrowser.Station, playingURL string) {
+	playing := station.URLToPlay() != "" && station.URLToPlay() == playingURL
+	saved := a.engine.IsFavorite(station.URLToPlay())
+	chosen := a.stationSel == i
+
 	ui.Column(c).Gap(4).Fill().Padding(4).Radius(6).Background(t.Surface).Children(func() {
-		ui.Box(c).Height(80).Radius(6).Clip().Background(t.SurfaceHover).Children(func() {
+		logo := ui.Box(c).Height(80).Radius(6).Clip().Background(t.SurfaceHover)
+		// The buttons show while the pointer is on the card, and on the
+		// card the keyboard chose, which cannot be hovered.
+		showButtons := logo.Hovered() || chosen
+		logo.Children(func() {
 			if bitmap := a.stationLogo(station); bitmap != nil {
 				ui.Image(c, bitmap).Fit(ui.Cover).Grow(1)
-			} else {
-				// No logo yet, or none to be had: the station's initials
-				// on a color of its own, as an avatar does.
+			} else if !showButtons {
+				// No logo yet, or none to be had: the station's initials,
+				// as an avatar does. They give way to the buttons, which
+				// would otherwise sit on them.
 				ui.Text(c, initialsOf(station.Name)).FontSize(26).Bold().
 					TextColor(t.TextMuted).AlignSelf(ui.Center).Margin(0, ui.Auto)
 			}
+			if showButtons {
+				ui.Row(c).Absolute().Top(4).Right(4).Gap(4).Children(func() {
+					overlayButton(c, playIcon, "Play "+station.Name, "Play", func() {
+						a.engine.PlayStation(i)
+					})
+					label := "Save " + station.Name
+					if saved {
+						label = "Saved " + station.Name
+					}
+					icon := heartIcon
+					if saved {
+						icon = heartFilledIcon
+					}
+					overlayButton(c, icon, label, "Save to favorites", func() {
+						if err := a.engine.ToggleFavorite(station.URLToPlay()); err != nil {
+							a.engine.ReportError(err)
+						}
+					})
+				})
+			}
 		})
+
 		ui.Row(c).Gap(4).AlignItems(ui.Center).Children(func() {
-			if station.URLToPlay() != "" && station.URLToPlay() == playingURL {
+			if playing {
 				ui.Text(c, "▶").FontSize(10).TextColor(t.Accent)
 			}
 			ui.Text(c, station.Name).FontSize(12).Grow(1).MaxLines(1)
-			if a.engine.IsFavorite(station.URLToPlay()) {
-				ui.Text(c, "★").FontSize(11).TextColor(t.Accent)
+			if saved {
+				ui.Text(c, "♥").FontSize(11).TextColor(t.Accent)
 			}
 		})
 		ui.Text(c, stationDetail(station)).FontSize(10).TextColor(t.TextMuted).SingleLine()
-		ui.Row(c).Gap(4).Children(func() {
-			ui.Button(c, "Play").FontSize(11).Label("Play " + station.Name).OnClick(func() {
-				if i := a.stationIndex(station.UUID); i >= 0 {
-					a.engine.PlayStation(i)
-				}
-			})
-			saved := a.engine.IsFavorite(station.URLToPlay())
-			fav := "Save"
-			if saved {
-				fav = "Saved"
-			}
-			label := "Save " + station.Name
-			if saved {
-				label = "Saved " + station.Name
-			}
-			ui.Button(c, fav).FontSize(11).Label(label).Tooltip("Save to favorites").OnClick(func() {
-				if err := a.engine.ToggleFavorite(station.URLToPlay()); err != nil {
-					a.engine.ReportError(err)
-				}
-			})
-		})
+	})
+}
+
+// overlayButton is a round icon button that floats over a card's logo.
+func overlayButton(c *ui.Context, icon *ui.SVG, label, tooltip string, onClick func()) {
+	ui.ButtonBase(c).Size(26, 26).Radius(13).Center().
+		Background(ui.RGBA(0, 0, 0, 0.55)).TextColor(ui.RGB(255, 255, 255)).
+		Label(label).Tooltip(tooltip).OnClick(onClick).Children(func() {
+		ui.Icon(c, icon).Size(15, 15)
 	})
 }
 

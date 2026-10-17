@@ -446,6 +446,10 @@ func TestBrowseShowsStationsAndFavorites(t *testing.T) {
 		t.Errorf("queries = %+v", queries)
 	}
 
+	// The card's buttons float over the logo while the pointer is on it.
+	// Move the pointer there, as a hand would.
+	hover(t, tt, "Rock Antenne")
+
 	// The card's Play button plays that station's resolved URL.
 	if err := tt.Click("Play Rock Antenne"); err != nil {
 		t.Fatal(err)
@@ -538,5 +542,103 @@ func TestBrowseSearch(t *testing.T) {
 	tt.Frame()
 	if !tt.HasText("Jazz Radio") || tt.HasText("Rock Antenne") {
 		t.Errorf("the search result does not show: %v", tt.Texts())
+	}
+}
+
+// found reports whether an element with this text or label is shown.
+func found(tt *ui.Tester, text string) bool {
+	_, ok := tt.Find(text)
+	return ok
+}
+
+// hover puts the pointer on the card showing text, as a hand would.
+func hover(t *testing.T, tt *ui.Tester, text string) {
+	t.Helper()
+	r, ok := tt.Find(text)
+	if !ok {
+		t.Fatalf("no card shows %q: %v", text, tt.Texts())
+	}
+	tt.Move(r.X+r.W/2, r.Y+r.H/2)
+	tt.Frame()
+}
+
+func TestCardButtonsAppearOnlyOnHover(t *testing.T) {
+	a, _, _ := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Stations) > 0 })
+	tt.Frame()
+
+	// Away from the cards, the cards are pictures and text only.
+	tt.Move(0, 0)
+	tt.Frame()
+	if found(tt, "Play Rock Antenne") {
+		t.Error("the Play button shows without the pointer on the card")
+	}
+	if found(tt, "Save Rock Antenne") {
+		t.Error("the Save button shows without the pointer on the card")
+	}
+
+	// On the card, they float over its logo.
+	hover(t, tt, "Rock Antenne")
+	if !found(tt, "Play Rock Antenne") || !found(tt, "Save Rock Antenne") {
+		t.Fatalf("the buttons do not show on hover: %v", tt.Texts())
+	}
+
+	// Leaving the card hides them again.
+	tt.Move(0, 0)
+	tt.Frame()
+	if found(tt, "Play Rock Antenne") {
+		t.Error("the Play button stayed after the pointer left")
+	}
+}
+
+func TestCardButtonsShowOnTheChosenCard(t *testing.T) {
+	// The keyboard cannot hover, so the card it chose shows its buttons.
+	a, _, _ := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Stations) > 0 })
+	tt.Frame()
+
+	a.stationSel = 0
+	tt.Frame()
+	if !found(tt, "Play Rock Antenne") {
+		t.Fatalf("the chosen card does not show its buttons: %v", tt.Texts())
+	}
+}
+
+func TestSavedCardShowsAFilledHeart(t *testing.T) {
+	a, _, _ := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Stations) > 0 })
+	tt.Frame()
+
+	hover(t, tt, "Rock Antenne")
+	if err := tt.Click("Save Rock Antenne"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return a.engine.IsFavorite("https://a/stream.mp3") })
+	tt.Frame()
+
+	// The button names the station as saved, and the card marks it.
+	if !found(tt, "Saved Rock Antenne") {
+		t.Errorf("the save button does not say the station is saved: %v", tt.Texts())
+	}
+	if !tt.HasText("♥") {
+		t.Errorf("the card does not show the saved mark: %v", tt.Texts())
 	}
 }
