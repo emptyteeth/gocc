@@ -19,7 +19,8 @@ gocc 控制局域网里的 Chromecast 设备：发现设备、把播放列表里
 - **中** —— 当前设备的状态（播放中/暂停/空闲、媒体标题、URL）与操作：播放/暂停、停止、刷新，以及音量滑块和静音。
 - **右（桌面版）** —— 顶部在 **Favorites / Browse** 之间切换：
   - **Favorites**：收藏的电台和手写的 URL。双击条目播放，也可以点 Play；下方表单可按 URL 手动添加。
-  - **Browse**：从 [radio-browser.info](https://www.radio-browser.info/) 浏览在线电台。选国家（可输入过滤）、排序方式（Votes / Popular / Bitrate / Name），搜台名，电台以卡片列出，带 logo、码率与编码。卡片上的 Play 直接播放，Save 把它加入收藏。双击卡片或按回车也能播放。
+  - **Browse**：从 [radio-browser.info](https://www.radio-browser.info/) 浏览在线电台。选国家（可输入过滤）、排序方式（Votes / Popular / Bitrate / Name），搜台名，电台以卡片列出，带 logo、码率与编码。卡片上的 Play 直接播放，Save 把它加入收藏。双击卡片或按回车也能播放。**Refresh** 会丢掉缓存重新读取。
+  - 读取结果有缓存：国家列表 6 小时，电台页 5 分钟（按国家、排序、搜索词区分），失败结果 30 秒。切回看过的国家/排序/搜索词是**瞬时**的，不再等网络（实测 840ms → 1ms，零请求）。同一页并发请求会合并成一次。
 - **右（命令行版）** —— 仍是原来的播放列表，条目为「名称 + URL（+ 可选 content type）」。**双击条目**即播放，每行还有一个 **Play** 按钮。命令行版的电台浏览与收藏待桌面版稳定后再补。
 
 设备收下命令后要缓冲一会儿才真正出声，这段空档里两个界面都会显示一行提示（`⟳ Requesting Living Room…` / `⟳ Buffering on Kitchen…`），让人知道请求已经发出、只是还在等。若设备迟迟不开始（默认 30 秒），提示会换成一条明确的错误，而不是一直挂着。
@@ -127,7 +128,7 @@ jazz	http://jazz.example/stream	audio/aac
 | --- | --- |
 | `main.go` | 桌面版入口：创建窗口，挂载界面 |
 | `cmd/gocc-cli/` | 命令行版入口：解析参数，起 HTTP 服务 |
-| `core/` | **应用内核**：设备发现、连接、状态、播放列表。不含任何界面。两个前端都建在它之上 |
+| `core/` | **应用内核**：设备发现、连接、状态、播放列表、收藏、目录缓存。不含任何界面。两个前端都建在它之上 |
 | `app/` | 桌面版界面：窗口、控件状态、三栏布局的构建 |
 | `web/` | 命令行版界面：HTTP 路由、SSE 推送、内嵌页面（`web/ui/index.html`） |
 | `cast/` | Chromecast：设备发现（`discovery.go`）、单设备控制（`client.go`）、content type 推断（`contenttype.go`）、音量节流（`volume.go`） |

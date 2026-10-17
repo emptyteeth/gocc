@@ -140,11 +140,19 @@ func (a *App) browsePane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 
 	ui.Column(c).Gap(6).Children(func() {
 		a.countryPicker(c, t, s)
-		ui.Row(c).Gap(8).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			order := a.orderIndex(s.Order)
 			if ui.Segmented(c, &order, orderLabels()...).Label("Order").Changed() {
 				a.engine.SetOrder(browseOrders[order].order)
 			}
+			ui.Button(c, "Refresh").Label("Refresh catalogue").
+				Tooltip("Read the catalogue again, past what is cached").
+				OnClick(func() {
+					a.engine.InvalidateCatalogue()
+					// The country chosen stays; only what was read of the
+					// catalogue goes, and the page is asked for again.
+					a.engine.LoadStations()
+				})
 		})
 		a.searchBox(c, t)
 	})

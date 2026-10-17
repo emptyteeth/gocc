@@ -129,6 +129,19 @@ type Engine struct {
 	searchSeq uint64
 	// countriesSeq does the same for the country list.
 	countriesSeq uint64
+	// cache keeps what was read, so that going back to a country, an
+	// order or a search word does not wait for the network again.
+	cache          *stationCache
+	countriesCache *countryCache
+	// requests are the questions being asked right now, by key, so that
+	// two calls for the same page share one request.
+	requests requestSet
+}
+
+// requestSet is the questions in flight.
+type requestSet struct {
+	sync.Mutex
+	waiting map[stationKey]chan struct{}
 }
 
 // loadingTimeout is how long a stream asked for may take to start before
@@ -214,7 +227,14 @@ func New(opts Options) (*Engine, error) {
 		})
 	}
 
-	e := &Engine{opts: opts, chosen: -1, order: radiobrowser.OrderVotes}
+	e := &Engine{
+		opts:           opts,
+		chosen:         -1,
+		order:          radiobrowser.OrderVotes,
+		cache:          newStationCache(),
+		countriesCache: newCountryCache(),
+		requests:       requestSet{waiting: map[stationKey]chan struct{}{}},
+	}
 
 	dir := opts.DataDir
 	if dir == "" {
@@ -853,8 +873,24 @@ func ValidateEntry(entry playlist.Entry) error {
 func (e *Engine) FavoritesPath() string { return e.favorites.Path }
 
 // LoadCountries reads the countries the catalogue has stations in. It
-// returns at once; the list arrives through the snapshot.
+// returns at once; the list arrives through the snapshot. A list read
+// within the last few hours is used without asking again.
 func (e *Engine) LoadCountries() {
+	if countries, ok := e.countriesCache.get(); ok {
+		e.mu.Lock()
+		e.countries = countries
+		picked := e.countryCode == "" && len(countries) > 0
+		if picked {
+			e.countryCode = countries[0].Code
+		}
+		e.mu.Unlock()
+		e.changed()
+		if picked {
+			e.LoadStations()
+		}
+		return
+	}
+
 	e.mu.Lock()
 	e.countriesSeq++
 	seq := e.countriesSeq
@@ -889,11 +925,19 @@ func (e *Engine) LoadCountries() {
 			e.setErr(fmt.Errorf("radio-browser: reading the countries: %w", err))
 			return
 		}
+		e.countriesCache.put(countries)
 		e.changed()
 		if picked {
 			e.LoadStations()
 		}
 	}()
+}
+
+// InvalidateCatalogue forgets everything read from the catalogue, so that
+// the next look asks the service again. A scan uses it.
+func (e *Engine) InvalidateCatalogue() {
+	e.countriesCache.clear()
+	e.cache.clear()
 }
 
 // SetCountry limits the stations to one country, by its ISO code, and
@@ -940,7 +984,41 @@ func (e *Engine) SetStationQuery(q string) {
 
 // LoadStations reads the stations for the country, order and query the
 // engine holds. It returns at once; the list arrives through the snapshot.
+//
+// A page read within the last few minutes is shown without asking the
+// service again, so going back to a country or an order is instant. Two
+// answers of the same question share one request.
 func (e *Engine) LoadStations() {
+	e.mu.Lock()
+	q := radiobrowser.Query{
+		CountryCode: e.countryCode,
+		Order:       e.order,
+		Reverse:     e.order != radiobrowser.OrderName,
+		Name:        e.query,
+		Limit:       radiobrowser.DefaultLimit,
+	}
+	e.mu.Unlock()
+	key := stationKey{
+		country: q.CountryCode,
+		order:   q.Order,
+		query:   q.Name,
+		limit:   q.Limit,
+	}
+
+	// A fresh page is shown at once, without a request or the spinner.
+	if stations, err, ok := e.cache.get(key); ok {
+		e.mu.Lock()
+		e.searchSeq++
+		e.searchErr = err
+		if err == nil {
+			e.stations = stations
+		}
+		e.searching = false
+		e.mu.Unlock()
+		e.changed()
+		return
+	}
+
 	e.mu.Lock()
 	e.searchSeq++
 	seq := e.searchSeq
@@ -951,20 +1029,28 @@ func (e *Engine) LoadStations() {
 	e.mu.Unlock()
 	e.changed()
 
-	go func() {
-		e.mu.Lock()
-		q := radiobrowser.Query{
-			CountryCode: e.countryCode,
-			Order:       e.order,
-			Reverse:     e.order != radiobrowser.OrderName,
-			Name:        e.query,
-			Limit:       radiobrowser.DefaultLimit,
-		}
-		e.mu.Unlock()
+	// A request for this same question may already be on its way: this
+	// one waits for it rather than asking again.
+	wait, mine := e.claim(key)
+	if !mine {
+		go func() {
+			<-wait
+			e.mu.Lock()
+			stale := seq != e.searchSeq
+			e.mu.Unlock()
+			if !stale {
+				e.reloadFromCache(key)
+			}
+		}()
+		return
+	}
 
+	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		stations, err := e.opts.Stations.Stations(ctx, q)
+		e.cache.put(key, stations, err)
+		e.release(key)
 
 		e.mu.Lock()
 		if seq != e.searchSeq {
@@ -984,6 +1070,52 @@ func (e *Engine) LoadStations() {
 		e.mu.Unlock()
 		e.changed()
 	}()
+}
+
+// claim says whether the caller is the one that must ask for key: when a
+// request is already on its way, it returns the channel to wait on and
+// false.
+func (e *Engine) claim(key stationKey) (<-chan struct{}, bool) {
+	e.requests.Lock()
+	defer e.requests.Unlock()
+	if wait, ok := e.requests.waiting[key]; ok {
+		return wait, false
+	}
+	wait := make(chan struct{})
+	if e.requests.waiting == nil {
+		e.requests.waiting = map[stationKey]chan struct{}{}
+	}
+	e.requests.waiting[key] = wait
+	return wait, true
+}
+
+// release ends the request for key, waking whoever waited for it.
+func (e *Engine) release(key stationKey) {
+	e.requests.Lock()
+	defer e.requests.Unlock()
+	wait, ok := e.requests.waiting[key]
+	if !ok {
+		return
+	}
+	delete(e.requests.waiting, key)
+	close(wait)
+}
+
+// reloadFromCache shows the page a finished request cached, for a caller
+// that waited for it rather than asking again.
+func (e *Engine) reloadFromCache(key stationKey) {
+	stations, err, ok := e.cache.get(key)
+	if !ok {
+		return
+	}
+	e.mu.Lock()
+	e.searching = false
+	e.searchErr = err
+	if err == nil {
+		e.stations = stations
+	}
+	e.mu.Unlock()
+	e.changed()
 }
 
 // PlayStation plays station i of the catalogue.

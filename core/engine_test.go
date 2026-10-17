@@ -382,20 +382,29 @@ func TestPlayingWithoutADeviceDoesNotWait(t *testing.T) {
 // fakeSource is a radio-browser catalogue that answers with what it holds,
 // and records what it was asked.
 type fakeSource struct {
-	mu        sync.Mutex
-	countries []radiobrowser.Country
-	stations  []radiobrowser.Station
-	queries   []radiobrowser.Query
-	err       error
+	mu           sync.Mutex
+	countries    []radiobrowser.Country
+	stations     []radiobrowser.Station
+	queries      []radiobrowser.Query
+	countryReads int
+	err          error
 }
 
 func (f *fakeSource) Countries(context.Context) ([]radiobrowser.Country, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.countryReads++
 	if f.err != nil {
 		return nil, f.err
 	}
 	return f.countries, nil
+}
+
+// countryCalls is how often the country list was asked for.
+func (f *fakeSource) countryCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.countryReads
 }
 
 func (f *fakeSource) Stations(_ context.Context, q radiobrowser.Query) ([]radiobrowser.Station, error) {
@@ -642,4 +651,115 @@ func TestSearchErrorIsReported(t *testing.T) {
 	if e.Snapshot().Searching {
 		t.Error("the search is still reported as running")
 	}
+}
+
+func TestGoingBackToACountryDoesNotAskAgain(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	// The country list chooses DE and reads its stations.
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+	e.SetCountry("FR")
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
+
+	// Going back to DE is answered from the cache, without a request.
+	e.SetCountry("DE")
+	waitFor(t, func() bool {
+		s := e.Snapshot()
+		return !s.Searching && len(s.Stations) > 0
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != 2 {
+		t.Errorf("going back asked again: %d requests", got)
+	}
+}
+
+func TestChangingTheOrderBackDoesNotAskAgain(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+	e.SetOrder(radiobrowser.OrderBitrate)
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
+
+	e.SetOrder(radiobrowser.OrderVotes)
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != 2 {
+		t.Errorf("changing the order back asked again: %d requests", got)
+	}
+	if got := e.Snapshot().Searching; got {
+		t.Error("a cached answer shows the spinner")
+	}
+}
+
+func TestSearchResultsAreCached(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+	e.SetStationQuery("jazz")
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+
+	// Clearing the search goes back to the page of DE that was cached:
+	// no request, and no spinner.
+	e.SetStationQuery("")
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != 2 {
+		t.Errorf("clearing the search asked again: %d requests", got)
+	}
+
+	// Typing the same search again comes from the cache too.
+	e.SetStationQuery("jazz")
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != 2 {
+		t.Errorf("typing the same search again asked: %d requests", got)
+	}
+	if got := e.Snapshot().Searching; got {
+		t.Error("a cached answer shows the spinner")
+	}
+}
+
+func TestConcurrentLoadsShareOneRequest(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	// Ask for the same page several times before the first answer: only
+	// one request should go out.
+	for range 5 {
+		e.LoadStations()
+	}
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+	if got := len(source.asked()); got != 1 {
+		t.Errorf("the same page was asked for %d times", got)
+	}
+}
+
+func TestCountriesAreCached(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(e.Snapshot().Countries) == 2 })
+	before := source.countryCalls()
+
+	e.LoadCountries()
+	time.Sleep(50 * time.Millisecond)
+	if got := source.countryCalls(); got != before {
+		t.Errorf("the countries were read again: %d -> %d", before, got)
+	}
+}
+
+func TestInvalidateCatalogueAsksAgain(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadStations()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+
+	e.InvalidateCatalogue()
+	e.LoadStations()
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
 }
