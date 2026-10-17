@@ -1236,3 +1236,41 @@ func (e *Engine) reloadFavorites() {
 	e.mu.Unlock()
 	e.changed()
 }
+
+// RemoveFavoriteByURL takes out the favorite with this URL, if there is
+// one. It is how a card toggles a station it knows only by its stream.
+func (e *Engine) RemoveFavoriteByURL(url string) error {
+	e.mu.Lock()
+	at := -1
+	for i, entry := range e.favs {
+		if entry.URL == url {
+			at = i
+			break
+		}
+	}
+	e.mu.Unlock()
+	if at < 0 {
+		return nil
+	}
+	return e.RemoveFavorite(at)
+}
+
+// PlayURL plays a favorite by its stream URL, for a front end that knows
+// the row's URL rather than its place in the list.
+func (e *Engine) PlayURL(url string) error {
+	e.mu.Lock()
+	var entry playlist.Entry
+	found := false
+	for _, f := range e.favs {
+		if f.URL == url {
+			entry, found = f, true
+			break
+		}
+	}
+	e.mu.Unlock()
+	if !found {
+		return fmt.Errorf("no favorite with URL %q", url)
+	}
+	e.Play(entry)
+	return nil
+}

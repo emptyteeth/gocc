@@ -23,6 +23,7 @@ import (
 	"github.com/free/gocc/cast"
 	"github.com/free/gocc/core"
 	"github.com/free/gocc/playlist"
+	"github.com/free/gocc/radiobrowser"
 )
 
 //go:embed ui
@@ -82,6 +83,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/playlist/{i}/choose", s.chooseEntry)
 	mux.HandleFunc("DELETE /api/playlist/{i}", s.removeEntry)
 
+	mux.HandleFunc("POST /api/catalogue/countries", s.loadCountries)
+	mux.HandleFunc("POST /api/catalogue/country", s.setCountry)
+	mux.HandleFunc("POST /api/catalogue/order", s.setOrder)
+	mux.HandleFunc("POST /api/catalogue/query", s.setQuery)
+	mux.HandleFunc("POST /api/catalogue/refresh", s.refreshCatalogue)
+	mux.HandleFunc("POST /api/catalogue/{i}/play", s.playStation)
+	mux.HandleFunc("POST /api/catalogue/{i}/favorite", s.favoriteStation)
+
+	mux.HandleFunc("POST /api/favorites", s.addFavorite)
+	mux.HandleFunc("POST /api/favorites/{i}/play", s.playFavorite)
+	mux.HandleFunc("DELETE /api/favorites/{i}", s.removeFavorite)
+	mux.HandleFunc("DELETE /api/favorites", s.removeFavoriteByURL)
+
 	if s.auth != nil {
 		return s.auth.middleware(mux)
 	}
@@ -130,6 +144,35 @@ type stateDTO struct {
 	// yet, and LoadingReason is what to tell the user meanwhile.
 	Loading       bool   `json:"loading"`
 	LoadingReason string `json:"loadingReason"`
+
+	// The catalogue and the favorites, as the page browses them.
+	Countries   []countryDTO `json:"countries"`
+	CountryCode string       `json:"countryCode"`
+	Order       string       `json:"order"`
+	Stations    []stationDTO `json:"stations"`
+	Query       string       `json:"query"`
+	Searching   bool         `json:"searching"`
+	SearchErr   string       `json:"searchError"`
+	Favorites   []entryDTO   `json:"favorites"`
+}
+
+type countryDTO struct {
+	Name     string `json:"name"`
+	Code     string `json:"code"`
+	Stations int    `json:"stations"`
+}
+
+type stationDTO struct {
+	UUID        string `json:"uuid"`
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	CountryCode string `json:"countryCode"`
+	Codec       string `json:"codec"`
+	Bitrate     int    `json:"bitrate"`
+	HLS         bool   `json:"hls"`
+	Favicon     string `json:"favicon"`
+	Playing     bool   `json:"playing"`
+	Saved       bool   `json:"saved"`
 }
 
 type deviceDTO struct {
@@ -168,6 +211,14 @@ func snapshotOf(s core.Snapshot) stateDTO {
 		Muted:         s.Muted,
 		Loading:       s.Loading,
 		LoadingReason: s.LoadingReason,
+		Countries:     make([]countryDTO, 0, len(s.Countries)),
+		CountryCode:   s.CountryCode,
+		Order:         string(s.Order),
+		Stations:      make([]stationDTO, 0, len(s.Stations)),
+		Query:         s.Query,
+		Searching:     s.Searching,
+		SearchErr:     s.SearchErr,
+		Favorites:     make([]entryDTO, 0, len(s.Favorites)),
 	}
 	for _, iface := range s.Interfaces {
 		dto.Interfaces = append(dto.Interfaces, iface.Name)
@@ -193,6 +244,36 @@ func snapshotOf(s core.Snapshot) stateDTO {
 			URL:         e.URL,
 			ContentType: e.ContentType,
 			Playing:     e.URL != "" && e.URL == s.Status.URL,
+		})
+	}
+	for _, c := range s.Countries {
+		dto.Countries = append(dto.Countries, countryDTO{
+			Name: c.Name, Code: c.Code, Stations: c.Stations,
+		})
+	}
+	saved := make(map[string]bool, len(s.Favorites))
+	for _, e := range s.Favorites {
+		saved[e.URL] = true
+		dto.Favorites = append(dto.Favorites, entryDTO{
+			Name:        e.Name,
+			URL:         e.URL,
+			ContentType: e.ContentType,
+			Playing:     e.URL != "" && e.URL == s.Status.URL,
+		})
+	}
+	for _, st := range s.Stations {
+		playURL := st.URLToPlay()
+		dto.Stations = append(dto.Stations, stationDTO{
+			UUID:        st.UUID,
+			Name:        st.Name,
+			URL:         playURL,
+			CountryCode: st.CountryCode,
+			Codec:       st.Codec,
+			Bitrate:     st.Bitrate,
+			HLS:         st.HLS != 0,
+			Favicon:     st.Favicon,
+			Playing:     playURL != "" && playURL == s.Status.URL,
+			Saved:       saved[playURL],
 		})
 	}
 	return dto
@@ -289,20 +370,27 @@ func (s *Server) disconnect(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) play(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Index *int `json:"index"`
+		Index *int   `json:"index"`
+		URL   string `json:"url"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if body.Index == nil {
+	switch {
+	case body.URL != "":
+		// A favorite row knows its stream, not its place in the list.
+		if err := s.engine.PlayURL(body.URL); err != nil {
+			writeError(w, err, http.StatusBadRequest)
+			return
+		}
+	case body.Index == nil:
 		// No index: play whatever row is chosen.
 		s.engine.PlayChosen()
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err := s.engine.PlayIndex(*body.Index); err != nil {
-		writeError(w, err, http.StatusBadRequest)
-		return
+	default:
+		if err := s.engine.PlayIndex(*body.Index); err != nil {
+			writeError(w, err, http.StatusBadRequest)
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -359,6 +447,178 @@ func (s *Server) mute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.engine.SetMuted(*body.Muted)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// loadCountries reads the country list, once.
+func (s *Server) loadCountries(w http.ResponseWriter, r *http.Request) {
+	s.engine.LoadCountries()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setCountry limits the catalogue to one country.
+func (s *Server) setCountry(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Code string `json:"code"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.engine.SetCountry(strings.ToUpper(body.Code))
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setOrder changes how the catalogue is sorted.
+func (s *Server) setOrder(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Order string `json:"order"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	order := radiobrowser.Order(body.Order)
+	if !order.Valid() {
+		writeError(w, fmt.Errorf("unknown order %q", body.Order), http.StatusBadRequest)
+		return
+	}
+	s.engine.SetOrder(order)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// setQuery searches the catalogue by name.
+func (s *Server) setQuery(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Query string `json:"query"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	s.engine.SetStationQuery(body.Query)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// refreshCatalogue drops what was cached and reads the page again.
+func (s *Server) refreshCatalogue(w http.ResponseWriter, r *http.Request) {
+	s.engine.InvalidateCatalogue()
+	s.engine.LoadStations()
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// playStation plays station i of the catalogue.
+func (s *Server) playStation(w http.ResponseWriter, r *http.Request) {
+	i, ok := pathIndex(w, r)
+	if !ok {
+		return
+	}
+	if err := s.engine.PlayStation(i); err != nil {
+		writeError(w, err, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// favoriteStation saves station i of the catalogue, or takes it out.
+func (s *Server) favoriteStation(w http.ResponseWriter, r *http.Request) {
+	i, ok := pathIndex(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Saved bool `json:"saved"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	var err error
+	if body.Saved {
+		err = s.engine.AddStationFavorite(i)
+	} else {
+		err = s.engine.RemoveFavoriteByURL(s.stationURL(i))
+	}
+	if err != nil {
+		writeError(w, err, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// stationURL is the stream URL of station i of the catalogue.
+func (s *Server) stationURL(i int) string {
+	stations := s.engine.Snapshot().Stations
+	if i < 0 || i >= len(stations) {
+		return ""
+	}
+	return stations[i].URLToPlay()
+}
+
+// addFavorite saves a hand written entry to the favorites.
+func (s *Server) addFavorite(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Name        string `json:"name"`
+		URL         string `json:"url"`
+		ContentType string `json:"contentType"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	entry := playlist.Entry{
+		Name:        strings.TrimSpace(body.Name),
+		URL:         strings.TrimSpace(body.URL),
+		ContentType: strings.TrimSpace(body.ContentType),
+	}
+	if err := core.ValidateEntry(entry); err != nil {
+		writeError(w, err, http.StatusBadRequest)
+		return
+	}
+	if err := s.engine.AddFavorite(entry); err != nil {
+		writeError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, snapshotOf(s.engine.Snapshot()))
+}
+
+// playFavorite plays favorite i.
+func (s *Server) playFavorite(w http.ResponseWriter, r *http.Request) {
+	i, ok := pathIndex(w, r)
+	if !ok {
+		return
+	}
+	if err := s.engine.PlayFavorite(i); err != nil {
+		writeError(w, err, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeFavoriteByURL takes out the favorite whose stream is in the body.
+func (s *Server) removeFavoriteByURL(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		URL string `json:"url"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if body.URL == "" {
+		writeError(w, fmt.Errorf("a URL is needed"), http.StatusBadRequest)
+		return
+	}
+	if err := s.engine.RemoveFavoriteByURL(body.URL); err != nil {
+		writeError(w, err, http.StatusBadRequest)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// removeFavorite takes favorite i out.
+func (s *Server) removeFavorite(w http.ResponseWriter, r *http.Request) {
+	i, ok := pathIndex(w, r)
+	if !ok {
+		return
+	}
+	if err := s.engine.RemoveFavorite(i); err != nil {
+		writeError(w, err, http.StatusBadRequest)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 

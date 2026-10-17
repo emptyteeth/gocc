@@ -9,12 +9,14 @@ import (
 	"net/http/httptest"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/free/gocc/cast"
 	"github.com/free/gocc/core"
 	"github.com/free/gocc/playlist"
+	"github.com/free/gocc/radiobrowser"
 )
 
 // These tests drive the page in a real browser, over a real HTTP server,
@@ -31,9 +33,17 @@ import (
 // fake, and returns its address and the device.
 func newBrowserServer(t *testing.T, device *fakeDevice, entries int) string {
 	t.Helper()
+	url, _ := newBrowserServerWith(t, device, entries)
+	return url
+}
+
+// newBrowserServerWith is newBrowserServer, and returns the engine too.
+func newBrowserServerWith(t *testing.T, device *fakeDevice, entries int) (string, *core.Engine) {
+	t.Helper()
 
 	engine, err := core.New(core.Options{
-		DataDir: t.TempDir(),
+		DataDir:  t.TempDir(),
+		Stations: newBrowserSource(),
 		NewController: func(_ cast.Device, onChange func(cast.Status, error)) (core.Controller, error) {
 			device.onChange = onChange
 			return device, nil
@@ -53,7 +63,7 @@ func newBrowserServer(t *testing.T, device *fakeDevice, entries int) string {
 			Name: fmt.Sprintf("station%d", i+1),
 			URL:  fmt.Sprintf("http://radio%d.example/stream.mp3", i+1),
 		}
-		if err := engine.AddEntry(entry); err != nil {
+		if err := engine.AddFavorite(entry); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -63,7 +73,54 @@ func newBrowserServer(t *testing.T, device *fakeDevice, entries int) string {
 
 	server := httptest.NewServer(New(engine, Options{}).Handler())
 	t.Cleanup(server.Close)
-	return server.URL
+	return server.URL, engine
+}
+
+// newBrowserSource is a catalogue for the browser tests, answered without
+// a network.
+func newBrowserSource() *browserSource {
+	return &browserSource{
+		countries: []radiobrowser.Country{
+			{Name: "Germany", Code: "DE", Stations: 6533},
+			{Name: "France", Code: "FR", Stations: 3926},
+		},
+		stations: []radiobrowser.Station{
+			{UUID: "s1", Name: "Rock Antenne", URL: "http://a",
+				URLResolved: "https://a/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s2", Name: "Jazz Radio", URL: "http://b",
+				URLResolved: "https://b/stream", Codec: "AAC", CountryCode: "DE"},
+		},
+	}
+}
+
+// browserSource is a radio-browser catalogue that answers without a
+// network.
+type browserSource struct {
+	mu        sync.Mutex
+	countries []radiobrowser.Country
+	stations  []radiobrowser.Station
+}
+
+func (f *browserSource) Countries(context.Context) ([]radiobrowser.Country, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]radiobrowser.Country(nil), f.countries...), nil
+}
+
+func (f *browserSource) Stations(_ context.Context, q radiobrowser.Query) ([]radiobrowser.Station, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]radiobrowser.Station, 0, len(f.stations))
+	for _, st := range f.stations {
+		if q.CountryCode != "" && st.CountryCode != q.CountryCode {
+			continue
+		}
+		if q.Name != "" && !strings.Contains(strings.ToLower(st.Name), strings.ToLower(q.Name)) {
+			continue
+		}
+		out = append(out, st)
+	}
+	return out, nil
 }
 
 // driver is a browser driven over chromedriver's HTTP API, which is the
@@ -232,6 +289,21 @@ func (d *driver) goTo(url string) {
 	}
 }
 
+// setWindow sets the browser window's size, for a phone layout.
+func (d *driver) setWindow(width, height int) {
+	d.t.Helper()
+	body := map[string]any{
+		"width": width, "height": height,
+		"x": 0, "y": 0,
+	}
+	if err := d.callInto("POST", "/session/"+d.sess+"/window/rect", body, nil); err != nil {
+		d.t.Fatalf("resizing the window: %v", err)
+	}
+	// Also tell the page, so that the CSS width matches without waiting
+	// for a desktop window manager.
+	d.eval("document.documentElement.style.width = '" + fmt.Sprint(width) + "px'")
+}
+
 // waitFor polls JavaScript until it is true, or fails the test.
 func (d *driver) waitFor(script, what string) {
 	d.t.Helper()
@@ -256,35 +328,28 @@ func firstLine(s string) string {
 // API, and a state arriving does not disturb what the user is doing.
 func TestBrowserPage(t *testing.T) {
 	device := &fakeDevice{}
-	base := newBrowserServer(t, device, 12)
+	base, engine := newBrowserServerWith(t, device, 12)
 	d := newDriver(t)
 
 	d.goTo(base + "/")
 	d.waitFor("return document.querySelectorAll('#devices li').length > 0", "the devices")
-	d.waitFor("return document.querySelectorAll('#playlist li').length === 12", "the playlist")
+	d.waitFor("return document.querySelectorAll('#favorites li').length === 12", "the favorites")
 
 	if got := d.evalString("return document.getElementById('header-status').textContent"); !strings.Contains(got, "device") {
 		t.Errorf("the header says %q", got)
 	}
-	if got := d.evalString("return document.querySelector('#playlist li .name').textContent.trim()"); got != "station1" {
+	if got := d.evalString("return document.querySelector('#favorites li .name').textContent.trim()"); got != "station1" {
 		t.Errorf("the first row is %q", got)
 	}
 
-	// A click chooses the row, through the API.
-	d.eval("document.querySelectorAll('#playlist li')[1].click()")
-	d.waitFor("return document.querySelectorAll('#playlist li.chosen').length === 1", "a chosen row")
-	if got := d.evalString("return document.querySelector('#playlist li.chosen .name').textContent.trim()"); got != "station2" {
-		t.Errorf("the chosen row is %q, want station2", got)
-	}
-
-	// The controls the user is holding are not replaced by a state push,
-	// which is asked for by choosing another row.
+	// The controls the user is holding are not replaced by a state push.
 	d.eval("window.__slider = document.querySelector('.volume input[type=range]')")
 	d.eval("window.__mute = document.querySelector('.check input')")
 	if d.eval("return window.__slider") == nil {
 		t.Fatal("there is no volume slider to hold")
 	}
-	d.eval("document.querySelectorAll('#playlist li')[0].click()")
+	// A state push: the favorites pane re-renders from a new state.
+	d.eval("document.querySelector('#favorites li .play').click()")
 	time.Sleep(600 * time.Millisecond)
 	if !d.evalBool("return document.querySelector('.volume input[type=range]') === window.__slider") {
 		t.Error("a state push replaced the volume slider")
@@ -293,16 +358,16 @@ func TestBrowserPage(t *testing.T) {
 		t.Error("a state push replaced the mute box")
 	}
 
-	// A scrolled playlist keeps its place through a state push.
-	d.eval("document.getElementById('playlist').scrollTop = 120")
-	before := d.evalString("return String(document.getElementById('playlist').scrollTop)")
+	// A scrolled favorites list keeps its place through a state push.
+	d.eval("document.getElementById('favorites').scrollTop = 120")
+	before := d.evalString("return String(document.getElementById('favorites').scrollTop)")
 	if before == "0" {
-		t.Fatal("the playlist did not scroll; the check would prove nothing")
+		t.Fatal("the favorites did not scroll; the check would prove nothing")
 	}
-	d.eval("document.querySelectorAll('#playlist li')[3].click()")
+	d.eval("document.querySelectorAll('#favorites li')[3].querySelector('.play').click()")
 	time.Sleep(500 * time.Millisecond)
-	if after := d.evalString("return String(document.getElementById('playlist').scrollTop)"); after != before {
-		t.Errorf("the playlist moved from %s to %s on a state push", before, after)
+	if after := d.evalString("return String(document.getElementById('favorites').scrollTop)"); after != before {
+		t.Errorf("the favorites moved from %s to %s on a state push", before, after)
 	}
 
 	// A slider being dragged is not moved by a state push.
@@ -312,7 +377,7 @@ func TestBrowserPage(t *testing.T) {
 		r.value = '0.9';
 		r.dispatchEvent(new Event('input', {bubbles: true}));
 	`)
-	d.eval("document.querySelectorAll('#playlist li')[0].click()")
+	d.eval("document.querySelector('#favorites li .play').click()")
 	time.Sleep(500 * time.Millisecond)
 	if got := d.evalString("return document.querySelector('.volume input[type=range]').value"); got != "0.9" {
 		t.Errorf("a state push moved the slider being dragged to %s", got)
@@ -330,22 +395,108 @@ func TestBrowserPage(t *testing.T) {
 		t.Error("the error replaced the volume slider")
 	}
 
-	// Double-clicking an entry plays it, once. The mark appears on the row
-	// that plays, which is the one double-clicked.
-	d.eval(`
-		const li = document.querySelectorAll('#playlist li')[1];
-		li.dispatchEvent(new MouseEvent('dblclick', {bubbles: true}));
-	`)
-	d.waitFor("return document.querySelectorAll('#playlist li')[1].querySelector('.name').textContent.includes('▶')",
-		"the playing mark")
-	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
-	if got := device.playedURLs()[0]; got != "http://radio2.example/stream.mp3" {
-		t.Errorf("played %q, want the second entry", got)
+	// The Play button of a favorite plays it: the last thing the device
+	// was asked for is that row's stream.
+	playedBefore := len(device.playedURLs())
+	d.eval("document.querySelectorAll('#favorites li')[1].querySelector('.play').click()")
+	waitFor(t, func() bool { return len(device.playedURLs()) > playedBefore })
+	played := device.playedURLs()
+	if got := played[len(played)-1]; got != "http://radio2.example/stream.mp3" {
+		t.Errorf("played %q, want the second favorite", got)
 	}
 
 	// Playing again through the transport reaches the device.
+	device.status.State = cast.StatePlaying
+	device.report()
+	d.waitFor("return document.querySelector('.transport button').textContent === 'Pause'", "the Pause button")
 	d.eval("document.querySelector('.transport button').click()")
 	waitFor(t, func() bool { return device.pauseCount() == 1 })
+
+	_ = engine
+}
+
+// TestBrowserBrowse drives the catalogue: read it, change the country and
+// the order, search, and play and save a station.
+func TestBrowserBrowse(t *testing.T) {
+	device := &fakeDevice{}
+	base, _ := newBrowserServerWith(t, device, 0)
+	d := newDriver(t)
+
+	d.goTo(base + "/")
+	d.waitFor("return document.querySelectorAll('#tabs button').length === 2", "the tabs")
+	d.eval("document.getElementById('tab-browse').click()")
+	d.waitFor("return document.querySelectorAll('#stations .station').length === 2", "the stations")
+
+	// The station's actions play and save it.
+	d.eval("document.querySelectorAll('#stations .station')[0].querySelector('.actions button').click()")
+	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
+	if got := device.playedURLs()[0]; got != "https://a/stream.mp3" {
+		t.Errorf("played %q, want the resolved URL", got)
+	}
+
+	d.eval("document.querySelectorAll('#stations .station')[1].querySelectorAll('.actions button')[1].click()")
+	waitFor(t, func() bool { return engineHasFavorite(t, base, "https://b/stream") })
+
+	// Changing the order asks the catalogue again.
+	d.eval("document.querySelector('#orders button[data-order=name]').click()")
+	time.Sleep(300 * time.Millisecond)
+	if got := d.evalString("return document.querySelector('#orders button.on').dataset.order"); got != "name" {
+		t.Errorf("the order is %q, want name", got)
+	}
+
+	// The search narrows the stations.
+	d.eval("document.getElementById('search').value = 'jazz'")
+	d.eval("document.getElementById('search').dispatchEvent(new Event('input', {bubbles: true}))")
+	time.Sleep(700 * time.Millisecond)
+	d.waitFor("return document.querySelectorAll('#stations .station').length === 1", "the search result")
+}
+
+// engineHasFavorite asks the page's state whether a favorite was saved.
+func engineHasFavorite(t *testing.T, base, url string) bool {
+	t.Helper()
+	res, err := http.Get(base + "/api/state")
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	var state stateDTO
+	if err := json.NewDecoder(res.Body).Decode(&state); err != nil {
+		return false
+	}
+	for _, f := range state.Favorites {
+		if f.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
+// TestBrowserMobile checks the phone layout: one column, and the search
+// field on its own line.
+func TestBrowserMobile(t *testing.T) {
+	device := &fakeDevice{}
+	base, _ := newBrowserServerWith(t, device, 3)
+	d := newDriver(t)
+
+	d.goTo(base + "/")
+	d.waitFor("return document.querySelectorAll('#favorites li').length === 3", "the favorites")
+
+	// A phone's width stacks the rows: the bottom row is below the top,
+	// across the whole width.
+	d.setWindow(390, 844)
+	time.Sleep(300 * time.Millisecond)
+
+	ok := d.evalBool(`
+		const top = document.getElementById('top').getBoundingClientRect();
+		const bottom = document.getElementById('bottom').getBoundingClientRect();
+		const search = document.getElementById('search').getBoundingClientRect();
+		const tabs = document.getElementById('tabs').getBoundingClientRect();
+		return bottom.top >= top.bottom - 2 && bottom.width >= window.innerWidth - 2
+			&& search.top > tabs.bottom - 2;
+	`)
+	if !ok {
+		t.Error("the phone layout is not one column with the search on its own line")
+	}
 }
 
 // TestBrowserBasicAuth checks that the page asks for the credentials a
@@ -408,17 +559,17 @@ func TestBrowserBasicAuth(t *testing.T) {
 	}
 }
 
-// TestBrowserLoadingAndPlayButton checks the two things a user needs when
-// a device is slow to start a stream: that the app says it is working on
-// it, and that playing does not depend on a double click, which a
-// touchpad's light taps do not always reach a browser as.
+// TestBrowserLoadingAndPlayButton checks what a user needs when a device
+// is slow to start a stream: that the app says it is working on it, and
+// that playing does not need a double click, which a touchpad's light taps
+// do not always reach a browser as.
 func TestBrowserLoadingAndPlayButton(t *testing.T) {
 	device := &fakeDevice{quiet: true}
 	base := newBrowserServer(t, device, 3)
 	d := newDriver(t)
 
 	d.goTo(base + "/")
-	d.waitFor("return document.querySelectorAll('#playlist li').length === 3", "the playlist")
+	d.waitFor("return document.querySelectorAll('#favorites li').length === 3", "the favorites")
 
 	if d.evalBool("return document.querySelector('.loading') !== null") {
 		t.Fatal("the app waits for something before anything was asked for")
@@ -426,7 +577,7 @@ func TestBrowserLoadingAndPlayButton(t *testing.T) {
 
 	// The Play button of the second row starts it, with one click.
 	clicked := d.evalBool(`
-		const b = document.querySelectorAll('#playlist li')[1].querySelector('button.play');
+		const b = document.querySelectorAll('#favorites li')[1].querySelector('button.play');
 		if (!b) return false;
 		b.click();
 		return true;
@@ -452,24 +603,47 @@ func TestBrowserLoadingAndPlayButton(t *testing.T) {
 	d.waitFor("return document.querySelector('.loading') === null", "the notice to go")
 }
 
-// TestBrowserPlayButtonDoesNotChooseTheRow checks that the button plays
-// without also choosing the row, which is the row's own click.
-func TestBrowserPlayButtonDoesNotChooseTheRow(t *testing.T) {
+// TestBrowserStationCards checks the catalogue cards: the actions float
+// over the picture, the text sits over its bottom, and the card plays.
+func TestBrowserStationCards(t *testing.T) {
 	device := &fakeDevice{}
-	base := newBrowserServer(t, device, 3)
+	base := newBrowserServer(t, device, 0)
 	d := newDriver(t)
 
 	d.goTo(base + "/")
-	d.waitFor("return document.querySelectorAll('#playlist li').length === 3", "the playlist")
+	d.waitFor("return document.querySelectorAll('#tabs button').length === 2", "the tabs")
+	d.eval("document.getElementById('tab-browse').click()")
+	d.waitFor("return document.querySelectorAll('#stations .station').length === 2", "the stations")
 
-	// Choose the first row, then play the third with its button.
-	d.eval("document.querySelectorAll('#playlist li')[0].click()")
-	d.waitFor("return document.querySelectorAll('#playlist li.chosen').length === 1", "a chosen row")
-
-	d.eval("document.querySelectorAll('#playlist li')[2].querySelector('button.play').click()")
-	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
-
-	if got := d.evalString("return document.querySelector('#playlist li.chosen .name').textContent.trim()"); got != "station1" {
-		t.Errorf("playing a row chose it: the chosen row is now %q", got)
+	// The card is a square: its height matches its width.
+	square := d.evalBool(`
+		const r = document.querySelector('#stations .station').getBoundingClientRect();
+		return Math.abs(r.width - r.height) < 2;
+	`)
+	if !square {
+		t.Error("the station card is not square")
 	}
+
+	// The name floats over the picture's bottom.
+	over := d.evalBool(`
+		const card = document.querySelector('#stations .station');
+		const meta = card.querySelector('.meta').getBoundingClientRect();
+		const r = card.getBoundingClientRect();
+		return meta.bottom <= r.bottom + 1 && meta.top > r.top + r.height / 2;
+	`)
+	if !over {
+		t.Error("the text does not float over the bottom of the picture")
+	}
+
+	// The actions are hidden until the card is hovered.
+	if d.evalString("return getComputedStyle(document.querySelector('#stations .station .actions')).opacity") != "0" {
+		t.Error("the actions show without hover")
+	}
+
+	// A double click plays the card.
+	d.eval(`
+		document.querySelectorAll('#stations .station')[0].dispatchEvent(
+			new MouseEvent('dblclick', {bubbles: true}));
+	`)
+	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
 }

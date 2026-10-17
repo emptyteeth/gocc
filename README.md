@@ -19,9 +19,9 @@ gocc 控制局域网里的 Chromecast 设备：发现设备、把播放列表里
 - **中** —— 当前设备的状态（播放中/暂停/空闲、媒体标题、URL）与操作：播放/暂停、停止、刷新，以及音量滑块和静音。
 - **右（桌面版）** —— 顶部在 **Favorites / Browse** 之间切换：
   - **Favorites**：收藏的电台和手写的 URL。双击条目播放，也可以点 Play；下方表单可按 URL 手动添加。
-  - **Browse**：从 [radio-browser.info](https://www.radio-browser.info/) 浏览在线电台。选国家（可输入过滤）、排序方式（Votes / Popular / Bitrate / Name），搜台名，电台以卡片列出，带 logo、码率与编码。卡片上的 Play 直接播放，Save 把它加入收藏。双击卡片或按回车也能播放。**Refresh** 会丢掉缓存重新读取。
+  - **Browse**：从 [radio-browser.info](https://www.radio-browser.info/) 浏览在线电台。选国家（可输入过滤）、排序方式（Votes / Popular / Name），搜台名，电台以正方形卡片列出，图片铺满、名称和详情浮在图片底部。卡片上的 Play 直接播放，♡ 把它加入收藏。双击卡片或按回车也能播放。**Refresh** 会丢掉缓存重新读取。
   - 读取结果有缓存：国家列表 6 小时，电台页 5 分钟（按国家、排序、搜索词区分），失败结果 30 秒。切回看过的国家/排序/搜索词是**瞬时**的，不再等网络（实测 840ms → 1ms，零请求）。同一页并发请求会合并成一次。
-- **右（命令行版）** —— 仍是原来的播放列表，条目为「名称 + URL（+ 可选 content type）」。**双击条目**即播放，每行还有一个 **Play** 按钮。命令行版的电台浏览与收藏待桌面版稳定后再补。
+- **右（命令行版）** —— 与桌面版相同的 **Favorites / Browse**：收藏列表可按名称或 URL 搜索，下方表单可手动添加 URL；Browse 同样按国家、排序、关键词浏览电台。页面是响应式的：窄屏（手机）时两行变成单列堆叠，搜索框独占一行。
 
 设备收下命令后要缓冲一会儿才真正出声，这段空档里两个界面都会显示一行提示（`⟳ Requesting Living Room…` / `⟳ Buffering on Kitchen…`），让人知道请求已经发出、只是还在等。若设备迟迟不开始（默认 30 秒），提示会换成一条明确的错误，而不是一直挂着。
 
@@ -163,7 +163,7 @@ go test -race ./...        # 含竞态检测
 
 - `core/`、`playlist/`、`radiobrowser/` —— 纯逻辑，用假设备、假发现和假电台目录驱动，不碰网络（`radiobrowser` 的测试用 `httptest` 固定 JSON）。
 - `app/` —— 界面用 mygo 的 `ui.Tester` 在无窗口环境下驱动：模拟点击、双击、拖动滑块、输入文字，并断言发往设备的命令。
-- `web/` —— HTTP 层用 `httptest` 打真实请求（含 basic auth、SSE 推送）；`web/browser_test.go` 更进一步，用 **chromedriver 驱动无头 Chromium 跑真实页面**，验证点击能到达 API、每行的 Play 按钮能播放且不会顺带改变选中行，以及状态推送不会打断正在拖动的滑块或已滚动的列表。这一组在没装 chromedriver 的机器上会自动跳过。
+- `web/` —— HTTP 层用 `httptest` 打真实请求（含 basic auth、SSE 推送）；`web/browser_test.go` 更进一步，用 **chromedriver 驱动无头 Chromium 跑真实页面**，验证收藏与目录能浏览和播放、方形卡片与浮层按钮、状态推送不会打断正在拖动的滑块或已滚动的列表，以及**手机宽度下两行变成单列**。这一组在没装 chromedriver 的机器上会自动跳过。
 
 想看一眼界面长什么样（不需要显示器）：
 

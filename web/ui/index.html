@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
 <title>gocc</title>
 <style>
   :root {
@@ -17,6 +19,8 @@
     --accent-text: #ffffff;
     --danger: #b91c1c;
     --radius: 8px;
+    --gap: 8px;
+    --pad: 12px;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -39,10 +43,12 @@
     font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
   header {
     display: flex; align-items: baseline; gap: 10px;
     padding: 10px 16px; border-bottom: 1px solid var(--border);
+    flex: none;
   }
   header h1 { font-size: 15px; margin: 0; }
   header .status { color: var(--muted); font-size: 12px; margin-left: auto; }
@@ -50,9 +56,13 @@
 
   main {
     flex: 1; min-height: 0;
-    display: grid; grid-template-columns: 250px minmax(0, 1fr) 340px;
+    display: grid; grid-template-rows: 1fr 2fr;
   }
-  .pane { padding: 12px; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+  .row { min-height: 0; display: grid; }
+  #top { grid-template-columns: 1fr 2fr; }
+  #bottom { border-top: 1px solid var(--border); }
+
+  .pane { padding: var(--pad); min-height: 0; display: flex; flex-direction: column; gap: var(--gap); }
   .pane + .pane { border-left: 1px solid var(--border); }
   .pane h2 {
     font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
@@ -65,16 +75,17 @@
     font: inherit; color: var(--text); background: var(--surface);
     border: 1px solid var(--border); border-radius: var(--radius);
     padding: 5px 10px; cursor: pointer;
+    min-height: 32px;
   }
   button:hover:not(:disabled) { background: var(--surface-hover); }
   button:disabled { opacity: .45; cursor: default; }
   button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; }
   button.primary:hover:not(:disabled) { filter: brightness(1.08); }
 
-  input {
+  input, select {
     font: inherit; color: var(--text); background: var(--bg);
     border: 1px solid var(--border); border-radius: var(--radius);
-    padding: 5px 8px; width: 100%; min-width: 0;
+    padding: 5px 8px; width: 100%; min-width: 0; min-height: 32px;
   }
 
   ul.list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 0; }
@@ -116,14 +127,14 @@
     background: var(--surface-hover); color: var(--muted);
   }
 
-  .transport { display: flex; gap: 8px; }
+  .transport { display: flex; gap: 8px; flex-wrap: wrap; }
   .transport button { min-width: 88px; }
 
   .volume { display: flex; align-items: center; gap: 10px; }
-  .volume input[type=range] { flex: 1; padding: 0; }
+  .volume input[type=range] { flex: 1; padding: 0; min-height: 24px; }
   .volume .pct { width: 42px; text-align: right; color: var(--muted); font-size: 12px; }
   label.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-  label.check input { width: auto; }
+  label.check input { width: auto; min-height: 0; }
 
   form.add {
     background: var(--surface); border-radius: var(--radius);
@@ -138,6 +149,77 @@
   .error b { color: var(--danger); display: block; }
   .error span { color: var(--muted); word-break: break-word; }
   .spinner { color: var(--muted); font-size: 12px; }
+
+  /* The top bar of the bottom row: the tabs and the one search field. */
+  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .segmented { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--radius);
+    background: var(--surface); border: 1px solid var(--border); flex: none; }
+  .segmented button { border: 0; background: transparent; padding: 4px 12px; border-radius: 6px; min-height: 28px; }
+  .segmented button.on { background: var(--bg); box-shadow: 0 0 0 1px var(--border); font-weight: 600; }
+  .search { flex: 1; min-width: 160px; display: flex; }
+  .search input { padding-left: 30px; }
+  .search-wrap { position: relative; flex: 1; display: flex; }
+  .search-wrap::before {
+    content: "⌕"; position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+    color: var(--muted); pointer-events: none; font-size: 16px;
+  }
+
+  /* The catalogue's own row: country, order, refresh. */
+  .filters { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .filters select { flex: 1 1 200px; max-width: 320px; }
+  .filters .segmented { flex: none; }
+
+  /* Station cards: a square picture with the text over its bottom. */
+  .grid { overflow: auto; flex: 1; min-height: 0; display: grid; gap: 8px; align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .station {
+    position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden;
+    background: var(--surface-hover); cursor: default;
+  }
+  .station img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .station .initials {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-size: 30px; font-weight: 600; color: var(--muted);
+  }
+  .station .shade {
+    position: absolute; inset: auto 0 0 0; height: 60px;
+    background: linear-gradient(180deg, transparent, rgba(0,0,0,.88));
+    pointer-events: none;
+  }
+  .station .meta {
+    position: absolute; inset: auto 8px 6px 8px; color: #fff;
+    display: flex; flex-direction: column; gap: 1px;
+  }
+  .station .meta .title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .station .meta .detail { font-size: 10px; color: rgba(255,255,255,.78);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .station .actions {
+    position: absolute; top: 6px; right: 6px; display: flex; gap: 4px;
+    opacity: 0; transition: opacity .12s ease;
+  }
+  .station:hover .actions, .station:focus-within .actions { opacity: 1; }
+  .iconbtn {
+    width: 28px; height: 28px; min-height: 28px; padding: 0; border: 0; border-radius: 14px;
+    background: rgba(0,0,0,.55); color: #fff; display: grid; place-items: center;
+    font-size: 13px; line-height: 1;
+  }
+  .iconbtn:hover:not(:disabled) { background: rgba(0,0,0,.75); }
+  .station.playing .meta .title::before { content: "▶ "; font-size: 10px; }
+
+  /* A phone: one column, each part taking the room it needs. */
+  @media (max-width: 720px) {
+    body { overflow: auto; }
+    main { display: block; }
+    #top, #bottom { display: block; }
+    #top .pane + .pane, #bottom { border-left: 0; }
+    #top .pane + .pane { border-top: 1px solid var(--border); }
+    .pane { padding: 10px; }
+    ul.list { max-height: 40vh; }
+    .grid { grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); }
+    .filters select { max-width: none; flex: 1 1 100%; }
+    .toolbar { gap: 8px; }
+    .search { min-width: 100%; order: 3; }
+  }
 </style>
 </head>
 <body>
@@ -147,45 +229,61 @@
 </header>
 
 <main>
-  <section class="pane" aria-label="Devices">
-    <div class="row-between">
-      <h2>Devices</h2>
-      <button id="scan" title="Look for devices again">Scan</button>
-    </div>
-    <ul class="list" id="devices"></ul>
-  </section>
+  <div class="row" id="top">
+    <section class="pane" aria-label="Devices">
+      <div class="row-between">
+        <h2>Devices</h2>
+        <button id="scan" title="Look for devices again">Scan</button>
+      </div>
+      <ul class="list" id="devices"></ul>
+    </section>
 
-  <section class="pane" aria-label="Device">
-    <div id="control"></div>
-  </section>
+    <section class="pane" aria-label="Device">
+      <div id="control"></div>
+    </section>
+  </div>
 
-  <section class="pane" aria-label="Playlist">
-    <div class="row-between">
-      <h2>Playlist</h2>
-      <button id="up" title="Move the entry up">Up</button>
-      <button id="down" title="Move the entry down">Down</button>
-      <button id="remove" title="Take the entry out">Remove</button>
-    </div>
-    <ul class="list" id="playlist"></ul>
-    <form class="add" id="add">
-      <input id="add-name" placeholder="Name" autocomplete="off">
-      <input id="add-url" placeholder="http://radio.example/stream.mp3" autocomplete="off">
-      <input id="add-type" placeholder="Content type (optional)" autocomplete="off">
-      <div class="actions"><button class="primary" type="submit">Add</button></div>
-    </form>
-  </section>
+  <div class="row" id="bottom">
+    <section class="pane" aria-label="Favorites and stations">
+      <div class="toolbar">
+        <div class="segmented" id="tabs" role="tablist">
+          <button id="tab-favorites" role="tab" aria-selected="true">Favorites</button>
+          <button id="tab-browse" role="tab" aria-selected="false">Browse</button>
+        </div>
+        <div class="search">
+          <div class="search-wrap"><input id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search"></div>
+        </div>
+      </div>
+
+      <div class="filters" id="filters">
+        <select id="country" aria-label="Country"></select>
+        <div class="segmented" id="orders" role="group" aria-label="Order"></div>
+        <button id="refresh-catalogue" title="Read the catalogue again">Refresh</button>
+      </div>
+
+      <ul class="list" id="favorites"></ul>
+      <div class="grid" id="stations"></div>
+
+      <form class="add" id="add">
+        <input id="add-name" placeholder="Name" autocomplete="off">
+        <input id="add-url" placeholder="http://radio.example/stream.mp3" autocomplete="off">
+        <input id="add-type" placeholder="Content type (optional)" autocomplete="off">
+        <div class="actions"><button class="primary" type="submit">Add</button></div>
+      </form>
+    </section>
+  </div>
 </main>
 
 <script>
 "use strict";
 
-// state is the last thing the server sent. The page is updated from it in
-// place whenever it changes, which is what makes two browsers agree.
 let state = null;
+let pane = "favorites";     // "favorites" or "browse"
+let search = "";
+let queryTimer = null;
 
 const $ = (id) => document.getElementById(id);
 
-// api calls the server, and throws what it says went wrong.
 async function api(method, path, body) {
   const res = await fetch(path, {
     method,
@@ -201,11 +299,8 @@ async function api(method, path, body) {
   return res.json();
 }
 
-// lastError is a mistake the page made, as a form that does not hold an
-// entry. It clears when the server sends a state again.
 let lastError = "";
 
-// act runs a call; a failure is shown rather than thrown away.
 function act(fn) {
   return async (event) => {
     try { await fn(event); } catch (err) {
@@ -215,15 +310,14 @@ function act(fn) {
   };
 }
 
-// render updates the page from state, changing what it must and leaving
-// the rest alone: a list is not rebuilt while it is scrolled, and the
-// volume slider is not moved under a hand that is dragging it.
 function render() {
   if (!state) return;
   renderHeader();
   renderDevices();
   renderControl();
-  renderPlaylist();
+  renderTabs();
+  renderFavorites();
+  renderBrowse();
 }
 
 // --- header --------------------------------------------------------------
@@ -248,7 +342,7 @@ function renderDevices() {
     replace(list, [el("li", { class: "empty" }, "Looking for devices…")]);
     return;
   }
-  const rows = state.devices.map((d) => {
+  replace(list, state.devices.map((d) => {
     const li = el("li", { class: d.connected ? "chosen" : "" });
     li.append(
       el("span", { class: "name" }, (d.connected ? "● " : "") + d.name),
@@ -256,8 +350,7 @@ function renderDevices() {
     );
     li.onclick = act(() => api("POST", "/api/choose", { uuid: d.uuid }));
     return li;
-  });
-  replace(list, rows);
+  }));
 }
 
 // --- the chosen device ---------------------------------------------------
@@ -268,15 +361,13 @@ function renderControl() {
 
   if (lastError) {
     nodes.push(el("div", { class: "error" }, [
-      el("b", {}, "Last error"),
-      el("span", {}, lastError),
+      el("b", {}, "Last error"), el("span", {}, lastError),
     ]));
   }
-
   if (!state.selected) {
     nodes.push(el("div", { class: "card" }, [
       el("div", { class: "state" }, "No device selected"),
-      el("div", { class: "url" }, "Choose a device on the left to control it."),
+      el("div", { class: "url" }, "Choose a device above to control it."),
     ]));
     replace(box, nodes);
     return;
@@ -306,10 +397,8 @@ function renderControl() {
   const track = [state.artist, state.title].filter(Boolean).join(" — ");
   if (track) card.append(el("div", { class: "track" }, track));
   if (state.url) card.append(el("div", { class: "url" }, state.url));
-  // The hint is for a device the user has not asked anything of; it would
-  // only be noise while the wait for a stream is on.
   if (state.idle && !state.loading) {
-    card.append(el("div", { class: "url" }, "Nothing is playing. Double-click an entry, or press its Play button."));
+    card.append(el("div", { class: "url" }, "Nothing is playing. Pick a station below."));
   }
   nodes.push(card);
 
@@ -318,20 +407,12 @@ function renderControl() {
     disabled(button("Stop", () => api("POST", "/api/stop")), state.idle),
     button("Refresh", () => api("POST", "/api/refresh")),
   ]));
-
-  // A device buffers a stream before it plays it. Say what is being waited
-  // for, so that a request that was heard does not look like one that was
-  // not.
   if (state.loading) {
     nodes.push(el("div", { class: "loading" }, [
-      el("span", { class: "dot" }),
-      state.loadingReason || "Starting…",
+      el("span", { class: "dot" }), state.loadingReason || "Starting…",
     ]));
   }
 
-  // The volume slider and the mute box are kept as they are, so that a
-  // state arriving while the slider is being dragged does not move the
-  // knob under the hand.
   if (!volume.range.dragging) {
     volume.range.value = String(state.volume);
     volume.pct.textContent = Math.round(state.volume * 100) + "%";
@@ -343,43 +424,182 @@ function renderControl() {
   replace(box, nodes);
 }
 
-// --- playlist ------------------------------------------------------------
+// --- tabs and search -----------------------------------------------------
 
-function renderPlaylist() {
-  const list = $("playlist");
-  if (state.playlist.length === 0) {
-    replace(list, [el("li", { class: "empty" }, "No entries yet. Add one below.")]);
-  } else {
-    replace(list, state.playlist.map((entry, i) => {
-      const li = el("li", { class: i === state.chosen ? "chosen" : "" });
-      li.title = "Click to choose, or use Play to start it";
-      // A button as well as the double click: a touchpad's light taps do
-      // not always reach a browser as a double click, and a button always
-      // works, by pointer or by keyboard.
-      const play = el("button", { class: "play", type: "button", title: "Play " + entry.name }, "Play");
-      play.onclick = (event) => {
-        // The row's own click chooses it: playing is this button's job.
-        event.stopPropagation();
-        act(() => api("POST", "/api/play", { index: i }))();
-      };
-      li.append(
-        el("span", { class: "top" }, [
-          el("span", { class: "name" }, (entry.playing ? "▶ " : "") + entry.name),
-          play,
-        ]),
-        el("span", { class: "sub" }, entry.url),
-      );
-      li.onclick = act(() => api("POST", "/api/playlist/" + i + "/choose"));
-      li.ondblclick = act(() => api("POST", "/api/play", { index: i }));
-      return li;
-    }));
+function renderTabs() {
+  $("tab-favorites").className = pane === "favorites" ? "on" : "";
+  $("tab-browse").className = pane === "browse" ? "on" : "";
+  $("tab-favorites").setAttribute("aria-selected", pane === "favorites");
+  $("tab-browse").setAttribute("aria-selected", pane === "browse");
+  $("search").placeholder = pane === "favorites" ? "Search favorites" : "Search stations";
+  $("filters").style.display = pane === "browse" ? "" : "none";
+}
+
+// --- favorites -----------------------------------------------------------
+
+function renderFavorites() {
+  const list = $("favorites");
+  list.style.display = pane === "favorites" ? "" : "none";
+  if (pane !== "favorites") return;
+
+  const word = search.trim().toLowerCase();
+  const shown = word === "" ? state.favorites : state.favorites.filter((e) =>
+    e.name.toLowerCase().includes(word) || e.url.toLowerCase().includes(word));
+
+  if (state.favorites.length === 0) {
+    replace(list, [el("li", { class: "empty" },
+      "No favorites yet. Save a station from Browse, or add a URL below.")]);
+    return;
+  }
+  if (shown.length === 0) {
+    replace(list, [el("li", { class: "empty" }, "No favorites match the search.")]);
+    return;
+  }
+  replace(list, shown.map((entry) => {
+    const li = el("li", { class: entry.playing ? "chosen" : "" });
+    const play = el("button", { class: "play", type: "button", title: "Play " + entry.name }, "Play");
+    play.onclick = (event) => {
+      event.stopPropagation();
+      act(() => api("POST", "/api/play", { url: entry.url }))();
+    };
+    const remove = el("button", { class: "play", type: "button", title: "Remove " + entry.name }, "✕");
+    remove.onclick = (event) => {
+      event.stopPropagation();
+      act(() => api("DELETE", "/api/favorites", { url: entry.url }))();
+    };
+    li.append(
+      el("span", { class: "top" }, [
+        el("span", { class: "name" }, (entry.playing ? "▶ " : "") + entry.name),
+        play,
+        remove,
+      ]),
+      el("span", { class: "sub" }, entry.url),
+    );
+    return li;
+  }));
+}
+
+// --- the catalogue -------------------------------------------------------
+
+function renderBrowse() {
+  const grid = $("stations");
+  grid.style.display = pane === "browse" ? "" : "none";
+  const add = $("add");
+  add.style.display = pane === "favorites" ? "" : "none";
+  if (pane !== "browse") return;
+
+  renderFilters();
+
+  if (state.searching) {
+    grid.replaceChildren(el("div", { class: "empty" }, "Reading the catalogue…"));
+    return;
+  }
+  if (state.searchError) {
+    grid.replaceChildren(el("div", { class: "error" }, [
+      el("b", {}, "The catalogue could not be read"),
+      el("span", {}, state.searchError),
+    ]));
+    return;
+  }
+  if (state.stations.length === 0) {
+    grid.replaceChildren(el("div", { class: "empty" },
+      "No stations. Try another country, or clear the search."));
+    return;
   }
 
-  const chosen = state.chosen;
-  const last = state.playlist.length - 1;
-  $("up").disabled = chosen <= 0;
-  $("down").disabled = chosen < 0 || chosen >= last;
-  $("remove").disabled = chosen < 0;
+  const word = search.trim().toLowerCase();
+  const shown = word === "" ? state.stations : state.stations.filter((s) =>
+    s.name.toLowerCase().includes(word));
+
+  replace(grid, shown.map((station) => stationCard(station)));
+}
+
+function renderFilters() {
+  const country = $("country");
+  // Rebuild only when the country list itself changed, so that an open
+  // dropdown is not closed under the user's finger on every state push.
+  if (country.dataset.count !== String(state.countries.length)) {
+    country.dataset.count = String(state.countries.length);
+    country.replaceChildren(...state.countries.map((c) =>
+      el("option", { value: c.code }, c.name + " (" + c.stations + ")")));
+  }
+  country.value = state.countryCode;
+
+  const orders = $("orders");
+  const wanted = [["votes", "Votes"], ["clickcount", "Popular"], ["name", "Name"]];
+  if (orders.children.length !== wanted.length) {
+    orders.replaceChildren(...wanted.map(([key, label]) => {
+      const b = el("button", { type: "button", "data-order": key }, label);
+      b.onclick = act(() => api("POST", "/api/catalogue/order", { order: key }));
+      return b;
+    }));
+  }
+  for (const b of orders.children) {
+    b.className = b.dataset.order === state.order ? "on" : "";
+  }
+}
+
+function stationCard(station) {
+  const card = el("div", { class: "station" + (station.playing ? " playing" : "") });
+  card.title = station.name;
+
+  const placeholder = el("span", { class: "initials" }, initials(station.name));
+  if (station.favicon) {
+    const img = el("img", { loading: "lazy", decoding: "async", alt: "" });
+    // The picture arrives as the card shows: the initials give way to it,
+    // and stay when it fails.
+    img.onload = () => placeholder.remove();
+    img.onerror = () => img.remove();
+    img.src = station.favicon;
+    card.append(img);
+  }
+  card.append(placeholder);
+  card.append(el("div", { class: "shade" }));
+
+  const actions = el("div", { class: "actions" }, [
+    iconAction("▶", "Play " + station.name, () => api("POST", "/api/catalogue/" + indexOf(station) + "/play")),
+    iconAction(station.saved ? "♥" : "♡", (station.saved ? "Saved " : "Save ") + station.name,
+      () => api("POST", "/api/catalogue/" + indexOf(station) + "/favorite", { saved: !station.saved })),
+  ]);
+  card.append(actions);
+
+  card.append(el("div", { class: "meta" }, [
+    el("span", { class: "title" }, station.name),
+    el("span", { class: "detail" }, detailOf(station)),
+  ]));
+  // A double click, or Enter on a focused card, plays it.
+  card.tabIndex = 0;
+  card.ondblclick = act(() => api("POST", "/api/catalogue/" + indexOf(station) + "/play"));
+  card.onkeydown = (event) => {
+    if (event.key === "Enter") act(() => api("POST", "/api/catalogue/" + indexOf(station) + "/play"))();
+  };
+  return card;
+}
+
+function indexOf(station) {
+  return state.stations.findIndex((s) => s.uuid === station.uuid);
+}
+
+function detailOf(station) {
+  const parts = [];
+  if (station.countryCode) parts.push(station.countryCode);
+  if (station.codec && station.codec.toUpperCase() !== "UNKNOWN") parts.push(station.codec);
+  if (station.bitrate > 0) parts.push(station.bitrate + " kbps");
+  if (station.hls) parts.push("HLS");
+  return parts.length ? parts.join(" · ") : "Radio";
+}
+
+function initials(name) {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "?";
+  if (words.length === 1) return words[0][0].toUpperCase();
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+}
+
+function iconAction(glyph, tooltip, fn) {
+  const b = el("button", { class: "iconbtn", type: "button", title: tooltip, "aria-label": tooltip }, glyph);
+  b.onclick = (event) => { event.stopPropagation(); act(fn)(); };
+  return b;
 }
 
 // --- small helpers -------------------------------------------------------
@@ -399,8 +619,7 @@ function el(tag, attrs, children) {
 }
 
 // replace swaps the children of a container, keeping any among them the
-// new ones reuse. A node moved to where it already was is left untouched,
-// which is what keeps the scrolled list and the dragged slider steady.
+// new ones reuse, which keeps a scrolled list and a dragged slider steady.
 function replace(container, nodes) {
   for (const node of nodes) container.append(node);
   const keep = new Set(nodes);
@@ -410,7 +629,7 @@ function replace(container, nodes) {
 }
 
 function button(label, fn, cls) {
-  const b = el("button", { class: cls || "" }, label);
+  const b = el("button", { class: cls || "", type: "button" }, label);
   b.onclick = act(fn);
   return b;
 }
@@ -422,15 +641,9 @@ function disabled(node, yes) {
 
 // --- the controls that live across renders -------------------------------
 
-// The volume slider and the mute box are made once, so that dragging the
-// slider is not interrupted by a state arriving.
 function buildVolume() {
-  const range = el("input", {
-    type: "range", min: "0", max: "1", step: "0.01",
-    value: "0", "aria-label": "Volume",
-  });
+  const range = el("input", { type: "range", min: "0", max: "1", step: "0.01", value: "0", "aria-label": "Volume" });
   const pct = el("span", { class: "pct" }, "0%");
-  // While the knob is held, the browser is the one that knows where it is.
   range.onpointerdown = () => { range.dragging = true; };
   range.onpointerup = () => { range.dragging = false; };
   range.oninput = () => {
@@ -441,28 +654,39 @@ function buildVolume() {
     range.dragging = false;
     return api("POST", "/api/volume", { level: Number(range.value) });
   });
-
   const mute = el("input", { type: "checkbox" });
   mute.onchange = act(() => api("POST", "/api/mute", { muted: mute.checked }));
-
   return { range, pct, mute };
 }
 
-// The two controls are made before anything is drawn, and only their
-// handlers change: the elements themselves never are.
 const volume = buildVolume();
-volume.range.dragging = false;
 
 // --- wiring --------------------------------------------------------------
 
 $("scan").onclick = act(() => api("POST", "/api/scan"));
-$("up").onclick = act(() => api("POST", "/api/playlist/" + state.chosen + "/move", { to: state.chosen - 1 }));
-$("down").onclick = act(() => api("POST", "/api/playlist/" + state.chosen + "/move", { to: state.chosen + 2 }));
-$("remove").onclick = act(() => api("DELETE", "/api/playlist/" + state.chosen));
+$("tab-favorites").onclick = () => { pane = "favorites"; render(); };
+$("tab-browse").onclick = () => { pane = "browse"; search = ""; $("search").value = ""; render(); };
+
+$("search").oninput = (event) => {
+  search = event.target.value;
+  render();
+  // The catalogue is asked only once the typing pauses; the favorites are
+  // filtered as it is typed, with no request at all.
+  if (pane !== "browse") return;
+  clearTimeout(queryTimer);
+  queryTimer = setTimeout(() => {
+    act(() => api("POST", "/api/catalogue/query", { query: search.trim() }))();
+  }, 300);
+};
+
+$("country").onchange = act((event) =>
+  api("POST", "/api/catalogue/country", { code: event.target.value }));
+
+$("refresh-catalogue").onclick = act(() => api("POST", "/api/catalogue/refresh"));
 
 $("add").onsubmit = act(async (event) => {
   event.preventDefault();
-  await api("POST", "/api/playlist", {
+  await api("POST", "/api/favorites", {
     name: $("add-name").value,
     url: $("add-url").value,
     contentType: $("add-type").value,
@@ -474,22 +698,31 @@ $("add").onsubmit = act(async (event) => {
 });
 
 // The state arrives as it changes, so the page never polls.
+let events = null;
 function connect() {
-  const events = new EventSource("/api/events");
+  events = new EventSource("/api/events");
   events.onmessage = (e) => {
     state = JSON.parse(e.data);
     lastError = "";
     render();
   };
   events.onerror = () => {
-    // EventSource reconnects on its own; say so while it is away.
     const el = $("header-status");
     el.textContent = "Disconnected from the server, reconnecting…";
     el.className = "status error";
   };
 }
-
+// A phone that went to the background may come back with a dead stream.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (events && events.readyState === EventSource.CLOSED) {
+    connect();
+  }
+});
 connect();
+
+// The country list is read when the page first shows the catalogue.
+act(() => api("POST", "/api/catalogue/countries"))();
 </script>
 </body>
 </html>
