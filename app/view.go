@@ -11,15 +11,24 @@ import (
 
 // view builds the window: the devices on the left, what the chosen device
 // is doing in the middle, and the playlist on the right.
+// view builds the window in two rows: the devices and the chosen device's
+// controls above, in a third and two thirds of the width, and the
+// favorites or the catalogue below, across the whole window.
 func (a *App) view(c *ui.Context) {
 	t := c.Theme()
 	s := a.engine.Snapshot()
 
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
-		a.devicesPane(c, t, s)
-		separator(c, t)
-		a.controlPane(c, t, s)
-		separator(c, t)
+	ui.Column(c).Fill().AlignItems(ui.Stretch).Children(func() {
+		// The top row takes a third of the height, the bottom two thirds.
+		// Basis(0) makes Grow split the height by the ratio alone, rather
+		// than from the content each row asks for.
+		ui.Row(c).Grow(1).Basis(0).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+			// The devices take a third of the width, the controls two.
+			a.devicesPane(c, t, s)
+			separator(c, t)
+			a.controlPane(c, t, s)
+		})
+		ui.Box(c).Height(1).Shrink(0).Background(t.Border)
 		a.rightPane(c, t, s)
 	})
 }
@@ -32,7 +41,7 @@ func separator(c *ui.Context, t *ui.Theme) {
 // devicesPane lists the devices found on the network, and lets one be
 // chosen to control.
 func (a *App) devicesPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
-	ui.Column(c).Width(250).FillHeight().Padding(12).Gap(8).Children(func() {
+	ui.Column(c).Grow(1).FillHeight().Padding(12).Gap(8).Children(func() {
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "Devices").FontSize(15).Bold().Grow(1)
 			ui.Button(c, "Scan").Tooltip("Look for devices again").OnClick(a.engine.Rediscover)
@@ -126,7 +135,7 @@ func deviceName(device cast.Device) string {
 // controlPane shows what the chosen device is doing, and the controls for
 // it: play and pause, stop, and the volume.
 func (a *App) controlPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
-	ui.Column(c).Grow(1).FillHeight().Padding(16).Gap(12).Children(func() {
+	ui.Column(c).Grow(2).FillHeight().Padding(16).Gap(12).Children(func() {
 		switch {
 		case s.Selected == "":
 			a.emptyControlPane(c, t)

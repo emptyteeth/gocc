@@ -47,7 +47,7 @@ var browseOrders = []struct {
 // rightPane draws the right column: the favorites, or the catalogue to
 // browse, chosen by the segmented control at its top.
 func (a *App) rightPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
-	ui.Column(c).Width(360).FillHeight().Padding(12).Gap(8).Children(func() {
+	ui.Column(c).Grow(2).Basis(0).MinHeight(0).FillHeight().Padding(12).Gap(8).Children(func() {
 		ui.Row(c).Children(func() {
 			ui.Segmented(c, &a.pane, "Favorites", "Browse").Label("Right column")
 		})
