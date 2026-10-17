@@ -390,48 +390,117 @@ func (a *App) stationIndex(uuid string) int {
 	return -1
 }
 
-// stationLogo returns the station's logo if it has been loaded, and starts
-// loading it when it has not.
-func (a *App) stationLogo(station radiobrowser.Station) *ui.Bitmap {
-	if station.Favicon == "" {
-		return nil
-	}
-	if bitmap, ok := a.logos[station.UUID]; ok {
-		return bitmap
-	}
-	if a.loading[station.UUID] || a.logoLoading >= maxLogoLoads {
-		return nil
-	}
-	a.loading[station.UUID] = true
-	a.logoLoading++
-	go a.loadLogo(station.UUID, station.Favicon)
-	return nil
+// logoState is a logo URL's picture, or the failure that stood in for it.
+type logoState struct {
+	bitmap *ui.Bitmap
+	// failed is when the last attempt failed; zero means none did. A
+	// URL that failed is left alone for a while, so that a broken one
+	// does not send a request every time its card is built.
+	failed time.Time
 }
+
+// The logo cache is bounded: a long scroll must not keep every picture it
+// passed on the GPU.
+const (
+	maxLogos      = 96
+	logoRetryWait = 5 * time.Minute
+)
 
 // maxLogoLoads bounds the logo requests in flight at once, so that a grid
 // of stations does not make a hundred connections at once.
 const maxLogoLoads = 6
 
-// loadLogo reads a station's logo and hands the bitmap to the window,
-// where it must be made.
-func (a *App) loadLogo(uuid, url string) {
+// stationLogo returns the station's logo if it has been loaded, and starts
+// loading it when it has not.
+//
+// A logo is kept by its URL: many stations share one picture, and it is
+// downloaded once for all of them.
+func (a *App) stationLogo(station radiobrowser.Station) *ui.Bitmap {
+	url := station.Favicon
+	if url == "" {
+		return nil
+	}
+
+	a.logoMu.Lock()
+	defer a.logoMu.Unlock()
+
+	if state, ok := a.logos[url]; ok {
+		if state.bitmap != nil {
+			a.touchLogoLocked(url)
+			return state.bitmap
+		}
+		if !state.failed.IsZero() && time.Since(state.failed) < logoRetryWait {
+			return nil
+		}
+	}
+	if a.logoLoading >= maxLogoLoads {
+		return nil
+	}
+	// Claim the URL before the goroutine starts, so that a second card
+	// with the same picture does not ask for it again.
+	if _, loading := a.logoInFlight[url]; loading {
+		return nil
+	}
+	if a.logoInFlight == nil {
+		a.logoInFlight = map[string]bool{}
+	}
+	a.logoInFlight[url] = true
+	a.logoLoading++
+	go a.loadLogo(url)
+	return nil
+}
+
+// touchLogoLocked makes url the most recently used picture.
+func (a *App) touchLogoLocked(url string) {
+	for i, u := range a.logoOrder {
+		if u == url {
+			a.logoOrder = append(a.logoOrder[:i], a.logoOrder[i+1:]...)
+			break
+		}
+	}
+	a.logoOrder = append(a.logoOrder, url)
+}
+
+// storeLogoLocked remembers a picture and drops the least recently used
+// one when the cache is full.
+func (a *App) storeLogoLocked(url string, bitmap *ui.Bitmap) {
+	a.logos[url] = logoState{bitmap: bitmap}
+	a.touchLogoLocked(url)
+	for len(a.logoOrder) > maxLogos {
+		oldest := a.logoOrder[0]
+		a.logoOrder = a.logoOrder[1:]
+		delete(a.logos, oldest)
+	}
+}
+
+// loadLogo reads a logo and hands the bitmap to the window, where it must
+// be made. It runs on a goroutine of its own.
+func (a *App) loadLogo(url string) {
+	// The count of loads must go down whatever happens, including a
+	// window that has closed and drops the callback that would redraw it.
+	defer func() {
+		a.logoMu.Lock()
+		delete(a.logoInFlight, url)
+		a.logoLoading--
+		a.logoMu.Unlock()
+	}()
+
 	bitmap, err := fetchBitmap(url)
+
 	if err != nil {
-		// A station with no reachable logo keeps its initials.
-		a.onMain(func() {
-			a.loading[uuid] = false
-			a.logoLoading--
-		})
+		a.logoMu.Lock()
+		a.logos[url] = logoState{failed: time.Now()}
+		a.logoMu.Unlock()
 		return
 	}
-	a.onMain(func() {
-		a.loading[uuid] = false
-		a.logoLoading--
-		if a.logos == nil {
-			a.logos = map[string]*ui.Bitmap{}
-		}
-		a.logos[uuid] = bitmap
-	})
+
+	// The bitmap is plain pixels until a frame paints it, so it is kept
+	// here and not through the window: a window that has gone drops its
+	// callbacks, and what was read would be lost with it.
+	a.logoMu.Lock()
+	a.storeLogoLocked(url, bitmap)
+	a.logoMu.Unlock()
+	a.onMain(func() {}) // asks for a frame, when there is a window
 }
 
 // fetchBitmap reads an image from url, on the caller's goroutine. The

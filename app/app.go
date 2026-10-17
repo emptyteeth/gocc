@@ -10,6 +10,7 @@ package app
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -50,12 +51,16 @@ type App struct {
 	searchChangedAt time.Time
 	countriesAsked  bool
 
-	// Station logos, loaded in the background. A bitmap is made on the
-	// main thread; the map and the count of loads in flight are only
-	// touched there, through onMain.
-	logos       map[string]*ui.Bitmap
-	loading     map[string]bool
-	logoLoading int
+	// Station logos, loaded in the background. They are kept by URL, not
+	// by station: many stations share one picture, and a bitmap is made
+	// once and shown in as many cards as need it. The mutex guards the
+	// maps and the count, which background goroutines write; a bitmap
+	// itself is made on the main thread, as MyGo asks.
+	logoMu       sync.Mutex
+	logos        map[string]logoState
+	logoOrder    []string
+	logoInFlight map[string]bool
+	logoLoading  int
 }
 
 // New makes the app and its engine, reading the playlist and listing the
@@ -71,8 +76,7 @@ func New(dataDir string) (*App, error) {
 		chosen:     -1,
 		favChosen:  -1,
 		stationSel: -1,
-		logos:      map[string]*ui.Bitmap{},
-		loading:    map[string]bool{},
+		logos:      map[string]logoState{},
 	}, nil
 }
 

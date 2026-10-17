@@ -119,8 +119,7 @@ func newTestAppWithSource(t *testing.T, entries ...playlist.Entry) (*App, *fakeD
 		chosen:     -1,
 		favChosen:  -1,
 		stationSel: -1,
-		logos:      map[string]*ui.Bitmap{},
-		loading:    map[string]bool{},
+		logos:      map[string]logoState{},
 	}
 	for _, entry := range entries {
 		if err := engine.AddFavorite(entry); err != nil {

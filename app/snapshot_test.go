@@ -68,8 +68,7 @@ func TestRenderSnapshot(t *testing.T) {
 		chosen:     -1,
 		favChosen:  0,
 		stationSel: 0,
-		logos:      map[string]*ui.Bitmap{},
-		loading:    map[string]bool{},
+		logos:      map[string]logoState{},
 	}
 	a.volume, a.volumeAt = 0.62, time.Now()
 
