@@ -17,7 +17,10 @@ gocc 控制局域网里的 Chromecast 设备：发现设备、把播放列表里
 
 - **左** —— 发现到的设备列表，一次操作一台。点击即连接；`Scan` 重新发现。
 - **中** —— 当前设备的状态（播放中/暂停/空闲、媒体标题、URL）与操作：播放/暂停、停止、刷新，以及音量滑块和静音。
-- **右** —— 播放列表，条目为「名称 + URL（+ 可选 content type）」。**双击条目**即把它的 URL 发到当前设备播放；命令行版每行还有一个 **Play** 按钮（触摸板轻触两下不总能被判成双击，按钮则一定能），桌面版选中后按回车亦可。下方表单可新增条目，顶部按钮可上移、下移、删除。
+- **右（桌面版）** —— 顶部在 **Favorites / Browse** 之间切换：
+  - **Favorites**：收藏的电台和手写的 URL。双击条目播放，也可以点 Play；下方表单可按 URL 手动添加。
+  - **Browse**：从 [radio-browser.info](https://www.radio-browser.info/) 浏览在线电台。选国家（可输入过滤）、排序方式（Votes / Popular / Bitrate / Name），搜台名，电台以卡片列出，带 logo、码率与编码。卡片上的 Play 直接播放，Save 把它加入收藏。双击卡片或按回车也能播放。
+- **右（命令行版）** —— 仍是原来的播放列表，条目为「名称 + URL（+ 可选 content type）」。**双击条目**即播放，每行还有一个 **Play** 按钮。命令行版的电台浏览与收藏待桌面版稳定后再补。
 
 设备收下命令后要缓冲一会儿才真正出声，这段空档里两个界面都会显示一行提示（`⟳ Requesting Living Room…` / `⟳ Buffering on Kitchen…`），让人知道请求已经发出、只是还在等。若设备迟迟不开始（默认 30 秒），提示会换成一条明确的错误，而不是一直挂着。
 
@@ -102,9 +105,11 @@ gocc-cli v1.0.0 (a1b2c3d, 2026-10-13T02:40:49Z)
 
 `make dist` 默认构建 linux/amd64、linux/arm64、darwin/amd64、darwin/arm64、windows/amd64 五个平台，每个平台两个二进制，文件名带版本号。
 
-## 播放列表
+## 收藏与播放列表
 
-一个纯文本文件，一行一个条目，字段之间用制表符分隔：
+桌面版的收藏存在 `favorites.txt`，和网页版播放的 `playlist.txt` 分开：收藏是给桌面版浏览/播放用的独立列表，两个文件都可以手写。
+
+格式相同，一个纯文本文件，一行一个条目，字段之间用制表符分隔：
 
 ```
 # gocc playlist: name<TAB>url[<TAB>content type]
@@ -126,6 +131,7 @@ jazz	http://jazz.example/stream	audio/aac
 | `app/` | 桌面版界面：窗口、控件状态、三栏布局的构建 |
 | `web/` | 命令行版界面：HTTP 路由、SSE 推送、内嵌页面（`web/ui/index.html`） |
 | `cast/` | Chromecast：设备发现（`discovery.go`）、单设备控制（`client.go`）、content type 推断（`contenttype.go`）、音量节流（`volume.go`） |
+| `radiobrowser/` | radio-browser.info 客户端：国家、电台搜索、content type 映射 |
 | `playlist/` | 播放列表的文本文件读写 |
 | `internal/version/` | 构建时注进二进制的版本号 |
 | `Makefile` | `make` 构建两个二进制 |
@@ -154,7 +160,7 @@ go test ./...              # 全部
 go test -race ./...        # 含竞态检测
 ```
 
-- `core/`、`playlist/` —— 纯逻辑，用假设备和假发现驱动，不碰网络。
+- `core/`、`playlist/`、`radiobrowser/` —— 纯逻辑，用假设备、假发现和假电台目录驱动，不碰网络（`radiobrowser` 的测试用 `httptest` 固定 JSON）。
 - `app/` —— 界面用 mygo 的 `ui.Tester` 在无窗口环境下驱动：模拟点击、双击、拖动滑块、输入文字，并断言发往设备的命令。
 - `web/` —— HTTP 层用 `httptest` 打真实请求（含 basic auth、SSE 推送）；`web/browser_test.go` 更进一步，用 **chromedriver 驱动无头 Chromium 跑真实页面**，验证点击能到达 API、每行的 Play 按钮能播放且不会顺带改变选中行，以及状态推送不会打断正在拖动的滑块或已滚动的列表。这一组在没装 chromedriver 的机器上会自动跳过。
 

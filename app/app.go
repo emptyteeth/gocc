@@ -39,6 +39,23 @@ type App struct {
 	newName  string
 	newURL   string
 	newType  string
+
+	// The right column: which pane shows, and what belongs to each.
+	pane            int
+	favList         ui.ListState
+	favChosen       int
+	grid            ui.GridState
+	stationSel      int
+	stationQuery    string
+	searchChangedAt time.Time
+	countriesAsked  bool
+
+	// Station logos, loaded in the background. A bitmap is made on the
+	// main thread; the map and the count of loads in flight are only
+	// touched there, through onMain.
+	logos       map[string]*ui.Bitmap
+	loading     map[string]bool
+	logoLoading int
 }
 
 // New makes the app and its engine, reading the playlist and listing the
@@ -48,7 +65,15 @@ func New(dataDir string) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &App{engine: engine, deviceSel: -1, chosen: -1}, nil
+	return &App{
+		engine:     engine,
+		deviceSel:  -1,
+		chosen:     -1,
+		favChosen:  -1,
+		stationSel: -1,
+		logos:      map[string]*ui.Bitmap{},
+		loading:    map[string]bool{},
+	}, nil
 }
 
 // Engine is what the window drives.
@@ -64,6 +89,13 @@ func (a *App) Attach(win *mygo.Window) {
 
 // View builds the window, and is its content.
 func (a *App) View(c *ui.Context) { a.view(c) }
+
+// onMain runs fn on the main thread, through the window, and redraws.
+func (a *App) onMain(fn func()) {
+	if a.win != nil {
+		a.win.Update(fn)
+	}
+}
 
 // Start begins discovering devices.
 func (a *App) Start(ctx context.Context) { a.engine.Start(ctx) }

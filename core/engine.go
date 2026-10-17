@@ -12,6 +12,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -21,7 +22,9 @@ import (
 	"time"
 
 	"github.com/free/gocc/cast"
+	"github.com/free/gocc/internal/version"
 	"github.com/free/gocc/playlist"
+	"github.com/free/gocc/radiobrowser"
 )
 
 // Controller is a device gocc talks to: a real cast.Client, or a stand-in
@@ -62,8 +65,17 @@ type Options struct {
 	// they change, until the returned function is called to stop it. Nil
 	// means cast.Discovery; a test replaces it with a fixed list.
 	Discover func(ctx context.Context, iface *net.Interface, onDevices func([]cast.Device)) (stop func(), err error)
+	// Stations reads the radio-browser catalogue. Nil means the real
+	// client; a test replaces it with a fixed catalogue.
+	Stations StationSource
 	// ConnectTimeout bounds connecting to a device. Zero means 15 seconds.
 	ConnectTimeout time.Duration
+}
+
+// StationSource is the radio-browser catalogue, as the engine uses it.
+type StationSource interface {
+	Countries(ctx context.Context) ([]radiobrowser.Country, error)
+	Stations(ctx context.Context, q radiobrowser.Query) ([]radiobrowser.Station, error)
 }
 
 // Engine is the state of gocc and the things it does.
@@ -97,6 +109,26 @@ type Engine struct {
 	mutedAt  time.Time
 	started  bool
 	closed   bool
+
+	// favorites is the list of saved stations and hand written entries.
+	// It is kept apart from the playlist, which the web version plays.
+	favorites *playlist.Playlist
+	favs      []playlist.Entry
+
+	// The radio-browser catalogue: what was read, what is asked for, and
+	// whether a request is in flight.
+	countries   []radiobrowser.Country
+	countryCode string
+	order       radiobrowser.Order
+	stations    []radiobrowser.Station
+	query       string
+	searching   bool
+	searchErr   error
+	// searchSeq makes an old answer lose to a newer question: a reply
+	// whose number is not the latest is dropped.
+	searchSeq uint64
+	// countriesSeq does the same for the country list.
+	countriesSeq uint64
 }
 
 // loadingTimeout is how long a stream asked for may take to start before
@@ -142,6 +174,17 @@ type Snapshot struct {
 	Loading       bool
 	LoadingEntry  string
 	LoadingReason string
+
+	// The radio-browser catalogue, and the favorites kept apart from the
+	// playlist.
+	Countries   []radiobrowser.Country
+	CountryCode string
+	Order       radiobrowser.Order
+	Stations    []radiobrowser.Station
+	Query       string
+	Searching   bool
+	SearchErr   string
+	Favorites   []playlist.Entry
 }
 
 // New makes an Engine, reading the playlist and listing the network
@@ -165,8 +208,13 @@ func New(opts Options) (*Engine, error) {
 	if opts.Discover == nil {
 		opts.Discover = discoverWithCast
 	}
+	if opts.Stations == nil {
+		opts.Stations = radiobrowser.New(radiobrowser.Options{
+			UserAgent: "gocc/" + version.Version,
+		})
+	}
 
-	e := &Engine{opts: opts, chosen: -1}
+	e := &Engine{opts: opts, chosen: -1, order: radiobrowser.OrderVotes}
 
 	dir := opts.DataDir
 	if dir == "" {
@@ -182,6 +230,15 @@ func New(opts Options) (*Engine, error) {
 	}
 	e.playlist = loaded
 	e.entries = e.playlist.Entries()
+
+	favPath := filepath.Join(dir, "favorites.txt")
+	favs, err := playlist.Load(favPath)
+	if err != nil {
+		log.Printf("gocc: reading the favorites: %v", err)
+		favs = &playlist.Playlist{Path: favPath}
+	}
+	e.favorites = favs
+	e.favs = favs.Entries()
 
 	if ifaces, err := cast.Interfaces(); err == nil {
 		e.interfaces = ifaces
@@ -346,6 +403,16 @@ func (e *Engine) Snapshot() Snapshot {
 		s.Loading = true
 		s.LoadingEntry = e.loading.entry.Name
 		s.LoadingReason = e.loading.reason
+	}
+	s.Countries = append([]radiobrowser.Country(nil), e.countries...)
+	s.CountryCode = e.countryCode
+	s.Order = e.order
+	s.Stations = append([]radiobrowser.Station(nil), e.stations...)
+	s.Query = e.query
+	s.Searching = e.searching
+	s.Favorites = append([]playlist.Entry(nil), e.favs...)
+	if e.searchErr != nil {
+		s.SearchErr = e.searchErr.Error()
 	}
 	return s
 }
@@ -780,4 +847,256 @@ func ValidateEntry(entry playlist.Entry) error {
 		return fmt.Errorf("the URL holds a space")
 	}
 	return nil
+}
+
+// FavoritesPath is the file the favorites are kept in.
+func (e *Engine) FavoritesPath() string { return e.favorites.Path }
+
+// LoadCountries reads the countries the catalogue has stations in. It
+// returns at once; the list arrives through the snapshot.
+func (e *Engine) LoadCountries() {
+	e.mu.Lock()
+	e.countriesSeq++
+	seq := e.countriesSeq
+	e.mu.Unlock()
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		countries, err := e.opts.Stations.Countries(ctx)
+
+		e.mu.Lock()
+		// A later request has answered already: this one is stale.
+		if seq != e.countriesSeq {
+			e.mu.Unlock()
+			return
+		}
+		picked := false
+		if err == nil {
+			e.countries = countries
+			// The first country is the one with the most stations, which
+			// is a fair place to start when the user did not say. Choosing
+			// it also reads its stations: the browse pane would otherwise
+			// wait for a choice that was already made for it.
+			if e.countryCode == "" && len(countries) > 0 {
+				e.countryCode = countries[0].Code
+				picked = true
+			}
+		}
+		e.mu.Unlock()
+
+		if err != nil {
+			e.setErr(fmt.Errorf("radio-browser: reading the countries: %w", err))
+			return
+		}
+		e.changed()
+		if picked {
+			e.LoadStations()
+		}
+	}()
+}
+
+// SetCountry limits the stations to one country, by its ISO code, and
+// reads them again. An empty code lists every country.
+func (e *Engine) SetCountry(code string) {
+	e.mu.Lock()
+	if e.countryCode == code {
+		e.mu.Unlock()
+		return
+	}
+	e.countryCode = code
+	e.mu.Unlock()
+	e.LoadStations()
+}
+
+// SetOrder changes how the stations are sorted, and reads them again.
+func (e *Engine) SetOrder(order radiobrowser.Order) {
+	if !order.Valid() {
+		return
+	}
+	e.mu.Lock()
+	if e.order == order {
+		e.mu.Unlock()
+		return
+	}
+	e.order = order
+	e.mu.Unlock()
+	e.LoadStations()
+}
+
+// SetStationQuery keeps the stations whose name contains q, and reads them
+// again. An empty q lists every station of the country.
+func (e *Engine) SetStationQuery(q string) {
+	q = strings.TrimSpace(q)
+	e.mu.Lock()
+	if e.query == q {
+		e.mu.Unlock()
+		return
+	}
+	e.query = q
+	e.mu.Unlock()
+	e.LoadStations()
+}
+
+// LoadStations reads the stations for the country, order and query the
+// engine holds. It returns at once; the list arrives through the snapshot.
+func (e *Engine) LoadStations() {
+	e.mu.Lock()
+	e.searchSeq++
+	seq := e.searchSeq
+	// The previous answer is no longer what is asked for. Keep it while
+	// the new one loads, so that the grid does not empty on every change.
+	e.searching = true
+	e.searchErr = nil
+	e.mu.Unlock()
+	e.changed()
+
+	go func() {
+		e.mu.Lock()
+		q := radiobrowser.Query{
+			CountryCode: e.countryCode,
+			Order:       e.order,
+			Reverse:     e.order != radiobrowser.OrderName,
+			Name:        e.query,
+			Limit:       radiobrowser.DefaultLimit,
+		}
+		e.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		stations, err := e.opts.Stations.Stations(ctx, q)
+
+		e.mu.Lock()
+		if seq != e.searchSeq {
+			// A newer question is being answered; this answer is stale.
+			e.mu.Unlock()
+			return
+		}
+		e.searching = false
+		if err != nil {
+			e.searchErr = err
+			e.mu.Unlock()
+			e.changed()
+			return
+		}
+		e.stations = stations
+		e.searchErr = nil
+		e.mu.Unlock()
+		e.changed()
+	}()
+}
+
+// PlayStation plays station i of the catalogue.
+func (e *Engine) PlayStation(i int) error {
+	e.mu.Lock()
+	if i < 0 || i >= len(e.stations) {
+		e.mu.Unlock()
+		return fmt.Errorf("no station at %d", i)
+	}
+	entry := e.stations[i].Entry()
+	e.mu.Unlock()
+	if entry.URL == "" {
+		return fmt.Errorf("the station has no stream URL")
+	}
+	e.Play(entry)
+	return nil
+}
+
+// AddStationFavorite saves station i of the catalogue to the favorites.
+func (e *Engine) AddStationFavorite(i int) error {
+	e.mu.Lock()
+	if i < 0 || i >= len(e.stations) {
+		e.mu.Unlock()
+		return fmt.Errorf("no station at %d", i)
+	}
+	entry := e.stations[i].Entry()
+	e.mu.Unlock()
+	return e.AddFavorite(entry)
+}
+
+// AddFavorite saves an entry to the favorites, unless it is there already.
+func (e *Engine) AddFavorite(entry playlist.Entry) error {
+	if err := e.favorites.Add(entry); err != nil {
+		// Adding what is already saved is not a mistake: the button that
+		// asks is a toggle, and pressing it twice is not an error.
+		if errors.Is(err, playlist.ErrDuplicate) {
+			return nil
+		}
+		return fmt.Errorf("favorites: %w", err)
+	}
+	e.reloadFavorites()
+	return nil
+}
+
+// RemoveFavorite takes entry i out of the favorites.
+func (e *Engine) RemoveFavorite(i int) error {
+	if err := e.favorites.Remove(i); err != nil {
+		return fmt.Errorf("favorites: %w", err)
+	}
+	e.reloadFavorites()
+	return nil
+}
+
+// PlayFavorite plays entry i of the favorites.
+func (e *Engine) PlayFavorite(i int) error {
+	e.mu.Lock()
+	if i < 0 || i >= len(e.favs) {
+		e.mu.Unlock()
+		return fmt.Errorf("no favorite at %d", i)
+	}
+	entry := e.favs[i]
+	e.mu.Unlock()
+	e.Play(entry)
+	return nil
+}
+
+// IsFavorite reports whether the favorites hold an entry for url.
+func (e *Engine) IsFavorite(url string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, entry := range e.favs {
+		if entry.URL == url {
+			return true
+		}
+	}
+	return false
+}
+
+// ToggleFavorite saves station i of the catalogue, or takes it out when it
+// is saved already.
+func (e *Engine) ToggleFavorite(url string) error {
+	e.mu.Lock()
+	var at = -1
+	for i, entry := range e.favs {
+		if entry.URL == url {
+			at = i
+			break
+		}
+	}
+	if at >= 0 {
+		e.mu.Unlock()
+		return e.RemoveFavorite(at)
+	}
+	var station *radiobrowser.Station
+	for i := range e.stations {
+		if e.stations[i].URLToPlay() == url {
+			station = &e.stations[i]
+			break
+		}
+	}
+	e.mu.Unlock()
+
+	if station == nil {
+		return fmt.Errorf("no station with URL %q", url)
+	}
+	return e.AddFavorite(station.Entry())
+}
+
+// reloadFavorites reads the favorites back into the snapshot.
+func (e *Engine) reloadFavorites() {
+	entries := e.favorites.Entries()
+	e.mu.Lock()
+	e.favs = entries
+	e.mu.Unlock()
+	e.changed()
 }

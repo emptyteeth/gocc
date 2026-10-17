@@ -1,14 +1,12 @@
 package app
 
 import (
-	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
 
 	"github.com/free/gocc/cast"
 	"github.com/free/gocc/core"
-	"github.com/free/gocc/playlist"
 )
 
 // view builds the window: the devices on the left, what the chosen device
@@ -22,7 +20,7 @@ func (a *App) view(c *ui.Context) {
 		separator(c, t)
 		a.controlPane(c, t, s)
 		separator(c, t)
-		a.playlistPane(c, t, s)
+		a.rightPane(c, t, s)
 	})
 }
 
@@ -273,96 +271,6 @@ func (a *App) volumeRow(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 
 // playlistPane lists the entries, and lets them be played, added, moved
 // and removed.
-func (a *App) playlistPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
-	ui.Column(c).Width(330).FillHeight().Padding(12).Gap(8).Children(func() {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "Playlist").FontSize(15).Bold().Grow(1)
-			ui.Button(c, "Up").Tooltip("Move the entry up").Disabled(a.chosen <= 0).
-				OnClick(func() { a.engine.MoveEntry(a.chosen, a.chosen-1) })
-			ui.Button(c, "Down").Tooltip("Move the entry down").
-				Disabled(a.chosen < 0 || a.chosen >= len(s.Playlist)-1).
-				OnClick(func() { a.engine.MoveEntry(a.chosen, a.chosen+2) })
-			ui.Button(c, "Remove").Tooltip("Take the entry out").
-				Disabled(a.chosen < 0).OnClick(func() { a.engine.RemoveEntry(a.chosen) })
-		})
-
-		// The list writes the chosen row through the pointer it is given,
-		// so it points at a field of the app; the engine is told after a
-		// click, and is followed when it changes the choice itself, as
-		// removing an entry does.
-		if a.chosen != s.Chosen {
-			a.chosen = s.Chosen
-		}
-		a.list.Key = func(i int) any { return s.Playlist[i].Name + "\x00" + s.Playlist[i].URL }
-		a.list.Label = func(i int) string { return s.Playlist[i].Name }
-		a.list.Selected = &a.chosen
-
-		list := ui.List(c, &a.list, len(s.Playlist), func(i int) {
-			a.playlistRow(c, t, s.Playlist[i], a.chosen == i, s.Status.URL)
-		}).Grow(1)
-		list.Children(func() {
-			if len(s.Playlist) == 0 {
-				ui.Text(c, "No entries yet. Add one below.").
-					TextColor(t.TextMuted).FontSize(12).Padding(8)
-			}
-		})
-		if list.Changed() {
-			a.engine.ChooseEntry(a.chosen)
-		}
-		// A double click on an entry sends its URL to the device.
-		if list.Submitted() && a.chosen >= 0 {
-			a.engine.PlayIndex(a.chosen)
-		}
-
-		a.addForm(c, t, s)
-	})
-}
-
-// playlistRow shows one entry, marked when it is what plays.
-func (a *App) playlistRow(c *ui.Context, t *ui.Theme, e playlist.Entry, chosen bool, playingURL string) {
-	text, muted := rowColors(t, chosen)
-	ui.Column(c).Padding(6, 8).Gap(2).Children(func() {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			if e.URL != "" && e.URL == playingURL {
-				ui.Text(c, "▶").FontSize(11).TextColor(text)
-			}
-			ui.Text(c, e.Name).TextColor(text).SingleLine()
-		})
-		ui.Text(c, e.URL).FontSize(11).TextColor(muted).SingleLine()
-	})
-}
-
-// addForm adds an entry to the playlist.
-func (a *App) addForm(c *ui.Context, t *ui.Theme, s core.Snapshot) {
-	ui.Column(c).Gap(6).Padding(8).Radius(8).Background(t.Surface).Children(func() {
-		ui.Text(c, "Add an entry").FontSize(11).Bold().TextColor(t.TextMuted)
-		ui.TextInput(c, &a.newName).Placeholder("Name").Label("Name")
-		ui.TextInput(c, &a.newURL).Placeholder("http://radio.example/stream.mp3").Label("URL")
-		ui.TextInput(c, &a.newType).Placeholder("Content type (optional)").Label("Content type")
-		ui.Row(c).Gap(6).Justify(ui.End).Children(func() {
-			ui.PrimaryButton(c, "Add").OnClick(a.submitNewEntry)
-		})
-	})
-}
-
-// submitNewEntry checks the form and adds the entry.
-func (a *App) submitNewEntry() {
-	entry := playlist.Entry{
-		Name:        strings.TrimSpace(a.newName),
-		URL:         strings.TrimSpace(a.newURL),
-		ContentType: strings.TrimSpace(a.newType),
-	}
-	if err := core.ValidateEntry(entry); err != nil {
-		a.engine.ReportError(err)
-		return
-	}
-	if err := a.engine.AddEntry(entry); err != nil {
-		return
-	}
-	a.newName, a.newURL, a.newType = "", "", ""
-	a.engine.ChooseEntry(len(a.engine.Snapshot().Playlist) - 1)
-}
-
 // findDevice returns the device with this UUID among those found.
 func findDevice(devices []cast.Device, uuid string) (cast.Device, bool) {
 	for _, device := range devices {

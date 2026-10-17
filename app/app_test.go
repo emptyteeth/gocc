@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"net"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/free/gocc/cast"
 	"github.com/free/gocc/core"
 	"github.com/free/gocc/playlist"
+	"github.com/free/gocc/radiobrowser"
 )
 
 // fakeDevice stands in for a device, so that the window can be driven in a
@@ -74,14 +77,25 @@ var testDevice = cast.Device{
 	UUID: "uuid-1", Name: "Living Room", Addr: "10.0.0.5", Port: 8009,
 }
 
-// newTestApp makes the window with a playlist in a temporary directory and
-// a device already connected, without touching the network.
+// newTestApp makes the window with the entries saved as favorites, a
+// catalogue to browse, and a device already connected, without touching
+// the network.
 func newTestApp(t *testing.T, entries ...playlist.Entry) (*App, *fakeDevice) {
 	t.Helper()
+	a, device, _ := newTestAppWithSource(t, entries...)
+	return a, device
+}
+
+// newTestAppWithSource is newTestApp, and returns the catalogue the tests
+// can look at.
+func newTestAppWithSource(t *testing.T, entries ...playlist.Entry) (*App, *fakeDevice, *fakeSource) {
+	t.Helper()
 	device := &fakeDevice{}
+	source := newTestSource()
 
 	engine, err := core.New(core.Options{
-		DataDir: t.TempDir(),
+		DataDir:  t.TempDir(),
+		Stations: source,
 		// The device is handed the callback the engine would give a real
 		// client, so that it reports status the same way.
 		NewController: func(_ cast.Device, onChange func(cast.Status, error)) (core.Controller, error) {
@@ -99,9 +113,17 @@ func newTestApp(t *testing.T, entries ...playlist.Entry) (*App, *fakeDevice) {
 	}
 	t.Cleanup(engine.Close)
 
-	a := &App{engine: engine, deviceSel: -1}
+	a := &App{
+		engine:     engine,
+		deviceSel:  -1,
+		chosen:     -1,
+		favChosen:  -1,
+		stationSel: -1,
+		logos:      map[string]*ui.Bitmap{},
+		loading:    map[string]bool{},
+	}
 	for _, entry := range entries {
-		if err := engine.AddEntry(entry); err != nil {
+		if err := engine.AddFavorite(entry); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -112,7 +134,26 @@ func newTestApp(t *testing.T, entries ...playlist.Entry) (*App, *fakeDevice) {
 		s := engine.Snapshot()
 		return s.Selected == testDevice.UUID && !s.Connecting
 	})
-	return a, device
+	return a, device, source
+}
+
+// newTestSource is a catalogue for the tests: two countries and a few
+// stations, answered without a network.
+func newTestSource() *fakeSource {
+	return &fakeSource{
+		countries: []radiobrowser.Country{
+			{Name: "Germany", Code: "DE", Stations: 6533},
+			{Name: "France", Code: "FR", Stations: 3926},
+		},
+		stations: []radiobrowser.Station{
+			{UUID: "s1", Name: "Rock Antenne", URL: "http://a",
+				URLResolved: "https://a/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s2", Name: "Jazz Radio", URL: "http://b",
+				URLResolved: "https://b/stream", Codec: "AAC", CountryCode: "DE"},
+			{UUID: "s3", Name: "France Inter", URL: "http://c",
+				URLResolved: "https://c/stream.mp3", Codec: "MP3", CountryCode: "FR"},
+		},
+	}
 }
 
 // waitFor polls until ok, or fails the test after a moment.
@@ -128,7 +169,7 @@ func waitFor(t *testing.T, ok func() bool) {
 	t.Fatal("timed out waiting for the engine")
 }
 
-func TestPlaylistDoubleClickPlays(t *testing.T) {
+func TestFavoritesDoubleClickPlays(t *testing.T) {
 	a, device := newTestApp(t,
 		playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"},
 		playlist.Entry{Name: "radio2", URL: "http://radio2.com/2.mp3"},
@@ -136,7 +177,7 @@ func TestPlaylistDoubleClickPlays(t *testing.T) {
 	tt := ui.NewTester(a.View, 1100, 700)
 
 	if !tt.HasText("radio1") || !tt.HasText("radio2") {
-		t.Fatalf("the playlist does not show: %v", tt.Texts())
+		t.Fatalf("the favorites do not show: %v", tt.Texts())
 	}
 
 	// The first click chooses the entry, and plays nothing.
@@ -172,11 +213,11 @@ func TestTransportButtons(t *testing.T) {
 	a, device := newTestApp(t, playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"})
 	tt := ui.NewTester(a.View, 1100, 700)
 
-	// Nothing plays, so the button offers to play the chosen entry.
+	// Nothing plays, so the button offers to play the chosen favorite.
 	if err := tt.Click("radio1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := tt.Click("Play"); err != nil {
+	if err := tt.Click("Play favorite"); err != nil {
 		t.Fatal(err)
 	}
 	if len(device.played) != 1 {
@@ -234,11 +275,11 @@ func TestVolumeSliderSendsNothingWhenItDoesNotMove(t *testing.T) {
 	}
 }
 
-func TestAddEntry(t *testing.T) {
+func TestAddFavoriteByURL(t *testing.T) {
 	a, _ := newTestApp(t)
 	tt := ui.NewTester(a.View, 1100, 700)
 
-	if !tt.HasText("Add an entry") {
+	if !tt.HasText("Add by URL") {
 		t.Fatalf("no form: %v", tt.Texts())
 	}
 
@@ -249,11 +290,11 @@ func TestAddEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !tt.HasText("radio3") {
-		t.Errorf("the new entry does not show: %v", tt.Texts())
+		t.Errorf("the new favorite does not show: %v", tt.Texts())
 	}
 
 	// It is on disk, so that the next run finds it.
-	again, err := playlist.Load(a.engine.PlaylistPath())
+	again, err := playlist.Load(a.engine.FavoritesPath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +308,7 @@ func TestAddEntry(t *testing.T) {
 	}
 }
 
-func TestAddEntryRejectsBadURL(t *testing.T) {
+func TestAddFavoriteRejectsBadURL(t *testing.T) {
 	a, _ := newTestApp(t)
 	tt := ui.NewTester(a.View, 1100, 700)
 
@@ -277,7 +318,7 @@ func TestAddEntryRejectsBadURL(t *testing.T) {
 	if err := tt.Click("Add"); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.engine.Snapshot().Playlist; len(got) != 0 {
+	if got := a.engine.Snapshot().Favorites; len(got) != 0 {
 		t.Fatalf("a bad entry was added: %+v", got)
 	}
 	tt.Frame()
@@ -286,33 +327,23 @@ func TestAddEntryRejectsBadURL(t *testing.T) {
 	}
 }
 
-func TestRemoveAndMove(t *testing.T) {
+func TestRemoveFavorite(t *testing.T) {
 	a, _ := newTestApp(t,
 		playlist.Entry{Name: "a", URL: "http://x.com/a"},
 		playlist.Entry{Name: "b", URL: "http://x.com/b"},
-		playlist.Entry{Name: "c", URL: "http://x.com/c"},
 	)
 	tt := ui.NewTester(a.View, 1100, 700)
 
 	if err := tt.Click("b"); err != nil {
 		t.Fatal(err)
 	}
-	if got := a.engine.Snapshot().Chosen; got != 1 {
-		t.Fatalf("chosen = %d, want 1", got)
-	}
-	if err := tt.Click("Down"); err != nil {
-		t.Fatal(err)
-	}
-	if names := entryNames(a); names != "a,c,b" {
-		t.Fatalf("after Down: %v", names)
-	}
-	if got := a.engine.Snapshot().Chosen; got != 2 {
-		t.Errorf("the moved entry is not still chosen: %d", got)
+	if a.favChosen != 1 {
+		t.Fatalf("chosen = %d, want 1", a.favChosen)
 	}
 	if err := tt.Click("Remove"); err != nil {
 		t.Fatal(err)
 	}
-	if names := entryNames(a); names != "a,c" {
+	if names := favoriteNames(a); names != "a" {
 		t.Fatalf("after Remove: %v", names)
 	}
 }
@@ -326,7 +357,9 @@ func TestDisconnectedDeviceReports(t *testing.T) {
 	if err := tt.Click("radio1"); err != nil {
 		t.Fatal(err)
 	}
-	a.engine.PlayChosen()
+	if err := a.engine.PlayFavorite(a.favChosen); err != nil {
+		t.Fatal(err)
+	}
 	if a.engine.Snapshot().Err == "" {
 		t.Fatal("no error with no device")
 	}
@@ -336,13 +369,169 @@ func TestDisconnectedDeviceReports(t *testing.T) {
 	}
 }
 
-func entryNames(a *App) string {
+func favoriteNames(a *App) string {
 	names := ""
-	for i, entry := range a.engine.Snapshot().Playlist {
+	for i, entry := range a.engine.Snapshot().Favorites {
 		if i > 0 {
 			names += ","
 		}
 		names += entry.Name
 	}
 	return names
+}
+
+// fakeSource is a radio-browser catalogue that answers without a network.
+type fakeSource struct {
+	mu        sync.Mutex
+	countries []radiobrowser.Country
+	stations  []radiobrowser.Station
+	queries   []radiobrowser.Query
+}
+
+func (f *fakeSource) Countries(context.Context) ([]radiobrowser.Country, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]radiobrowser.Country(nil), f.countries...), nil
+}
+
+func (f *fakeSource) Stations(_ context.Context, q radiobrowser.Query) ([]radiobrowser.Station, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = append(f.queries, q)
+	out := make([]radiobrowser.Station, 0, len(f.stations))
+	for _, station := range f.stations {
+		if q.CountryCode != "" && station.CountryCode != q.CountryCode {
+			continue
+		}
+		if q.Name != "" && !strings.Contains(strings.ToLower(station.Name), strings.ToLower(q.Name)) {
+			continue
+		}
+		out = append(out, station)
+	}
+	return out, nil
+}
+
+func (f *fakeSource) asked() []radiobrowser.Query {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]radiobrowser.Query(nil), f.queries...)
+}
+
+func TestBrowseShowsStationsAndFavorites(t *testing.T) {
+	a, device, source := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	// The favorites pane is what shows first.
+	if !tt.HasText("Favorites") || !tt.HasText("Add by URL") {
+		t.Fatalf("the favorites pane does not show: %v", tt.Texts())
+	}
+
+	// Browse reads the catalogue, with the first country chosen.
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Countries) == 2 })
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Stations) > 0 })
+	tt.Frame()
+
+	if !tt.HasText("Rock Antenne") {
+		t.Fatalf("the stations do not show: %v", tt.Texts())
+	}
+	if got := a.engine.Snapshot().CountryCode; got != "DE" {
+		t.Errorf("country = %q, want the first, DE", got)
+	}
+	// The catalogue was asked for Germany.
+	queries := source.asked()
+	if len(queries) == 0 || queries[len(queries)-1].CountryCode != "DE" {
+		t.Errorf("queries = %+v", queries)
+	}
+
+	// The card's Play button plays that station's resolved URL.
+	if err := tt.Click("Play Rock Antenne"); err != nil {
+		t.Fatal(err)
+	}
+	if len(device.played) != 1 || device.played[0] != "https://a/stream.mp3" {
+		t.Fatalf("played %v", device.played)
+	}
+
+	// Saving it adds it to the favorites, and the card says so.
+	if err := tt.Click("Save Rock Antenne"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Favorites) == 1 })
+	tt.Frame()
+	if !tt.HasText("Saved Rock Antenne") {
+		t.Errorf("the card does not show the station as saved: %v", tt.Texts())
+	}
+
+	// The favorites pane holds it.
+	if err := tt.Click("Favorites"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("Rock Antenne") {
+		t.Errorf("the saved station is not in the favorites: %v", tt.Texts())
+	}
+	if names := favoriteNames(a); names != "Rock Antenne" {
+		t.Errorf("favorites = %v", names)
+	}
+}
+
+func TestBrowseChangesCountryAndOrder(t *testing.T) {
+	a, _, source := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Countries) == 2 })
+
+	// Choosing France asks for France.
+	a.engine.SetCountry("FR")
+	waitFor(t, func() bool {
+		queries := source.asked()
+		return len(queries) > 0 && queries[len(queries)-1].CountryCode == "FR"
+	})
+
+	// The order is part of the next request.
+	a.engine.SetOrder(radiobrowser.OrderBitrate)
+	waitFor(t, func() bool {
+		queries := source.asked()
+		return len(queries) > 0 && queries[len(queries)-1].Order == radiobrowser.OrderBitrate
+	})
+	tt.Frame()
+	if !tt.HasText("Bitrate") {
+		t.Errorf("the order control does not show: %v", tt.Texts())
+	}
+}
+
+func TestBrowseSearch(t *testing.T) {
+	a, _, source := newTestAppWithSource(t)
+	tt := ui.NewTester(a.View, 1200, 720)
+
+	if err := tt.Click("Browse"); err != nil {
+		t.Fatal(err)
+	}
+	// The pane reads the countries on its first frame, then the stations
+	// of the first country.
+	tt.Frame()
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Countries) > 0 })
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Stations) > 0 })
+
+	// Typing in the search field, then waiting for the pause, searches.
+	tt.Click("Search stations")
+	tt.Type("jazz")
+	// The tester's clock only Advance moves, so the 300ms pause is reached
+	// by advancing it, as time passes in a real window.
+	tt.Advance(300 * time.Millisecond)
+	tt.Frame()
+	waitFor(t, func() bool {
+		queries := source.asked()
+		return len(queries) > 0 && queries[len(queries)-1].Name == "jazz"
+	})
+	waitFor(t, func() bool { return len(a.engine.Snapshot().Stations) == 1 })
+	tt.Frame()
+	if !tt.HasText("Jazz Radio") || tt.HasText("Rock Antenne") {
+		t.Errorf("the search result does not show: %v", tt.Texts())
+	}
 }

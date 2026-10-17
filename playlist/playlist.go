@@ -110,12 +110,24 @@ func (p *Playlist) Len() int {
 	return len(p.entries)
 }
 
-// Add appends an entry and saves the list.
+// ErrDuplicate is returned by Add when the list already holds an entry
+// with the same URL.
+var ErrDuplicate = errors.New("the list holds this URL already")
+
+// Add appends an entry and saves the list. It refuses an entry with the
+// URL of one already there: a list of stations that plays the same stream
+// twice is a mistake, not a feature.
 func (p *Playlist) Add(e Entry) error {
 	if err := e.validate(); err != nil {
 		return err
 	}
 	p.mu.Lock()
+	for _, have := range p.entries {
+		if have.URL == e.URL {
+			p.mu.Unlock()
+			return ErrDuplicate
+		}
+	}
 	p.entries = append(p.entries, e)
 	p.mu.Unlock()
 	return p.Save()

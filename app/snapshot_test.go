@@ -26,7 +26,8 @@ func TestRenderSnapshot(t *testing.T) {
 	kitchen := cast.Device{UUID: "uuid-2", Name: "Kitchen", Addr: "10.0.0.9", Port: 8009}
 
 	engine, err := core.New(core.Options{
-		DataDir: t.TempDir(),
+		DataDir:  t.TempDir(),
+		Stations: newTestSource(),
 		NewController: func(_ cast.Device, onChange func(cast.Status, error)) (core.Controller, error) {
 			device.onChange = onChange
 			return device, nil
@@ -61,11 +62,41 @@ func TestRenderSnapshot(t *testing.T) {
 	engine.PlayIndex(1)
 	waitFor(t, func() bool { return engine.Snapshot().Loading })
 
-	a := &App{engine: engine, deviceSel: 0}
+	a := &App{
+		engine:     engine,
+		deviceSel:  0,
+		chosen:     -1,
+		favChosen:  0,
+		stationSel: 0,
+		logos:      map[string]*ui.Bitmap{},
+		loading:    map[string]bool{},
+	}
 	a.volume, a.volumeAt = 0.62, time.Now()
 
+	// Read the catalogue, so that a station can be saved from it.
+	engine.LoadCountries()
+	waitFor(t, func() bool { return len(engine.Snapshot().Stations) > 0 })
+
+	// The favorites the window shows first.
+	if err := engine.AddFavorite(playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.AddStationFavorite(0); err != nil {
+		t.Fatal(err)
+	}
+	render(t, a, "/tmp/gocc-snapshot-favorites.png")
+
+	// The browse pane, with the catalogue read.
+	a.pane = paneBrowse
+	a.countriesAsked = true
+	render(t, a, "/tmp/gocc-snapshot-browse.png")
+}
+
+// render draws the window once and writes it as a PNG.
+func render(t *testing.T, a *App, path string) {
+	t.Helper()
 	img := ui.Render(a.View, 1080, 660, 2)
-	f, err := os.Create("/tmp/gocc-snapshot.png")
+	f, err := os.Create(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,5 +104,5 @@ func TestRenderSnapshot(t *testing.T) {
 	if err := png.Encode(f, img); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("wrote /tmp/gocc-snapshot.png")
+	t.Log("wrote " + path)
 }

@@ -2,13 +2,16 @@ package core
 
 import (
 	"context"
+	"errors"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/free/gocc/cast"
 	"github.com/free/gocc/playlist"
+	"github.com/free/gocc/radiobrowser"
 )
 
 // fakeDevice stands in for a device, so that the engine can be driven in a
@@ -373,5 +376,270 @@ func TestPlayingWithoutADeviceDoesNotWait(t *testing.T) {
 	waitFor(t, func() bool { return e.Snapshot().Err != "" })
 	if e.Snapshot().Loading {
 		t.Error("the app waits for a stream it could not have asked for")
+	}
+}
+
+// fakeSource is a radio-browser catalogue that answers with what it holds,
+// and records what it was asked.
+type fakeSource struct {
+	mu        sync.Mutex
+	countries []radiobrowser.Country
+	stations  []radiobrowser.Station
+	queries   []radiobrowser.Query
+	err       error
+}
+
+func (f *fakeSource) Countries(context.Context) ([]radiobrowser.Country, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.countries, nil
+}
+
+func (f *fakeSource) Stations(_ context.Context, q radiobrowser.Query) ([]radiobrowser.Station, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.queries = append(f.queries, q)
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.stations, nil
+}
+
+// asked returns the queries the catalogue received.
+func (f *fakeSource) asked() []radiobrowser.Query {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]radiobrowser.Query(nil), f.queries...)
+}
+
+// newTestEngineWithSource is newTestEngine with a catalogue the test
+// controls.
+func newTestEngineWithSource(t *testing.T) (*Engine, *fakeDevice, *fakeSource) {
+	t.Helper()
+	device := &fakeDevice{}
+	source := &fakeSource{
+		countries: []radiobrowser.Country{
+			{Name: "Germany", Code: "DE", Stations: 6533},
+			{Name: "France", Code: "FR", Stations: 3926},
+		},
+		stations: []radiobrowser.Station{
+			{UUID: "s1", Name: "Rock Antenne", URL: "http://a", URLResolved: "https://a/stream.mp3", Codec: "MP3", CountryCode: "DE"},
+			{UUID: "s2", Name: "Jazz", URL: "http://b", Codec: "AAC", CountryCode: "DE"},
+		},
+	}
+	e, err := New(Options{
+		DataDir: t.TempDir(),
+		NewController: func(cast.Device, func(cast.Status, error)) (Controller, error) {
+			return device, nil
+		},
+		Discover: func(_ context.Context, _ *net.Interface, onDevices func([]cast.Device)) (func(), error) {
+			onDevices([]cast.Device{testDevice})
+			return func() {}, nil
+		},
+		Stations: source,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(e.Close)
+	device.onChange = e.statusChanged
+	e.Start(context.Background())
+	e.Choose(testDevice)
+	waitFor(t, func() bool { return e.Snapshot().Selected == testDevice.UUID && !e.Snapshot().Connecting })
+	return e, device, source
+}
+
+func TestLoadCountriesAndStations(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(e.Snapshot().Countries) == 2 })
+	if got := e.Snapshot().CountryCode; got != "DE" {
+		t.Errorf("the first country was not chosen: %q", got)
+	}
+
+	e.LoadStations()
+	waitFor(t, func() bool { return len(e.Snapshot().Stations) == 2 && !e.Snapshot().Searching })
+	if got := e.Snapshot().Stations[0].Name; got != "Rock Antenne" {
+		t.Errorf("first station = %q", got)
+	}
+
+	// The query carries the country and the default order.
+	queries := source.asked()
+	if len(queries) == 0 {
+		t.Fatal("the catalogue was never asked")
+	}
+	q := queries[len(queries)-1]
+	if q.CountryCode != "DE" || q.Order != radiobrowser.OrderVotes || !q.Reverse {
+		t.Errorf("query = %+v", q)
+	}
+}
+
+func TestSetCountryAndOrderReload(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+	e.LoadStations()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+
+	e.SetCountry("FR")
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
+	if got := source.asked()[1].CountryCode; got != "FR" {
+		t.Errorf("country = %q", got)
+	}
+
+	e.SetOrder(radiobrowser.OrderBitrate)
+	waitFor(t, func() bool { return len(source.asked()) == 3 })
+	if got := source.asked()[2].Order; got != radiobrowser.OrderBitrate {
+		t.Errorf("order = %q", got)
+	}
+
+	// Setting the same values again must not make another request.
+	e.SetCountry("FR")
+	e.SetOrder(radiobrowser.OrderBitrate)
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != 3 {
+		t.Errorf("an unchanged filter made a request: %d queries", got)
+	}
+}
+
+func TestStationQueryIsTrimmed(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+	e.SetStationQuery("  jazz  ")
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+	if got := source.asked()[0].Name; got != "jazz" {
+		t.Errorf("query name = %q, want the trimmed word", got)
+	}
+	if got := e.Snapshot().Query; got != "jazz" {
+		t.Errorf("snapshot query = %q", got)
+	}
+}
+
+func TestPlayStation(t *testing.T) {
+	e, device, _ := newTestEngineWithSource(t)
+	e.LoadStations()
+	waitFor(t, func() bool { return len(e.Snapshot().Stations) == 2 })
+
+	if err := e.PlayStation(0); err != nil {
+		t.Fatal(err)
+	}
+	if len(device.played) != 1 || device.played[0] != "https://a/stream.mp3" {
+		t.Fatalf("played %v, want the resolved URL", device.played)
+	}
+	if device.types[0] != "audio/mpeg" {
+		t.Errorf("content type = %q, want audio/mpeg", device.types[0])
+	}
+	if err := e.PlayStation(9); err == nil {
+		t.Error("playing a station that is not there should fail")
+	}
+}
+
+func TestFavorites(t *testing.T) {
+	e, device, _ := newTestEngineWithSource(t)
+	e.LoadStations()
+	waitFor(t, func() bool { return len(e.Snapshot().Stations) == 2 })
+
+	if err := e.AddStationFavorite(0); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(e.Snapshot().Favorites); got != 1 {
+		t.Fatalf("favorites = %d", got)
+	}
+	fav := e.Snapshot().Favorites[0]
+	if fav.Name != "Rock Antenne" || fav.URL != "https://a/stream.mp3" {
+		t.Errorf("favorite = %+v", fav)
+	}
+	if !e.IsFavorite("https://a/stream.mp3") {
+		t.Error("the saved station is not reported as a favorite")
+	}
+
+	// Adding it again does nothing rather than failing.
+	if err := e.AddStationFavorite(0); err != nil {
+		t.Fatalf("adding a favorite twice: %v", err)
+	}
+	if got := len(e.Snapshot().Favorites); got != 1 {
+		t.Errorf("the duplicate was saved: %d", got)
+	}
+
+	// Playing it reaches the device.
+	if err := e.PlayFavorite(0); err != nil {
+		t.Fatal(err)
+	}
+	if len(device.played) != 1 {
+		t.Fatalf("played %v", device.played)
+	}
+
+	// Removing it takes it out, and it is on disk in between.
+	if err := e.RemoveFavorite(0); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(e.Snapshot().Favorites); got != 0 {
+		t.Errorf("favorites left: %d", got)
+	}
+}
+
+func TestFavoritesSurviveARestart(t *testing.T) {
+	dir := t.TempDir()
+	source := &fakeSource{}
+	makeEngine := func() *Engine {
+		e, err := New(Options{DataDir: dir, Stations: source})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(e.Close)
+		return e
+	}
+
+	e := makeEngine()
+	if err := e.AddFavorite(playlist.Entry{Name: "radio1", URL: "http://radio1.com/1.mp3"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A new engine over the same directory reads it back.
+	again := makeEngine()
+	defaults := again.Snapshot().Favorites
+	// The favorite is loaded in New, before any search.
+	_ = defaults
+	if got := again.FavoritesPath(); got == "" {
+		t.Fatal("no favorites path")
+	}
+	if !again.IsFavorite("http://radio1.com/1.mp3") {
+		t.Error("the favorite was not read back")
+	}
+}
+
+func TestToggleFavorite(t *testing.T) {
+	e, _, _ := newTestEngineWithSource(t)
+	e.LoadStations()
+	waitFor(t, func() bool { return len(e.Snapshot().Stations) == 2 })
+
+	if err := e.ToggleFavorite("https://a/stream.mp3"); err != nil {
+		t.Fatal(err)
+	}
+	if !e.IsFavorite("https://a/stream.mp3") {
+		t.Fatal("the toggle did not save the station")
+	}
+	if err := e.ToggleFavorite("https://a/stream.mp3"); err != nil {
+		t.Fatal(err)
+	}
+	if e.IsFavorite("https://a/stream.mp3") {
+		t.Error("the toggle did not take it out")
+	}
+	if err := e.ToggleFavorite("http://nowhere"); err == nil {
+		t.Error("toggling an unknown URL should fail")
+	}
+}
+
+func TestSearchErrorIsReported(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+	source.err = errors.New("the network is down")
+	e.LoadStations()
+	waitFor(t, func() bool { return e.Snapshot().SearchErr != "" })
+	if got := e.Snapshot().SearchErr; !strings.Contains(got, "network is down") {
+		t.Errorf("search error = %q", got)
+	}
+	if e.Snapshot().Searching {
+		t.Error("the search is still reported as running")
 	}
 }
