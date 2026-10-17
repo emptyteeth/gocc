@@ -28,7 +28,6 @@ var browseOrders = []struct {
 }{
 	{"Votes", radiobrowser.OrderVotes},
 	{"Popular", radiobrowser.OrderClickCount},
-	{"Bitrate", radiobrowser.OrderBitrate},
 	{"Name", radiobrowser.OrderName},
 }
 

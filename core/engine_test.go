@@ -763,3 +763,69 @@ func TestInvalidateCatalogueAsksAgain(t *testing.T) {
 	e.LoadStations()
 	waitFor(t, func() bool { return len(source.asked()) == 2 })
 }
+
+func TestSearchIgnoresCase(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+
+	e.SetStationQuery("JAZZ")
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+
+	// The same word in another case is the same question: no request.
+	e.SetStationQuery("jazz")
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != 2 {
+		t.Errorf("the same search in another case asked again: %d requests", got)
+	}
+	// What the engine holds is the normalized word.
+	if got := e.Snapshot().Query; got != "jazz" {
+		t.Errorf("query = %q, want the lowercased word", got)
+	}
+}
+
+func TestAFailedReadKeepsWhatIsShown(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(e.Snapshot().Stations) == 2 })
+	before := len(e.Snapshot().Stations)
+
+	// A failed read reports the error but leaves the stations in view, so
+	// that a network hiccup does not empty the grid.
+	source.mu.Lock()
+	source.err = errors.New("the network is down")
+	source.mu.Unlock()
+
+	e.SetOrder(radiobrowser.OrderName)
+	waitFor(t, func() bool { return e.Snapshot().SearchErr != "" })
+	if got := len(e.Snapshot().Stations); got != before {
+		t.Errorf("a failed read changed the stations from %d to %d", before, got)
+	}
+}
+
+func TestGoingBackIsSilent(t *testing.T) {
+	e, _, source := newTestEngineWithSource(t)
+
+	e.LoadCountries()
+	waitFor(t, func() bool { return len(source.asked()) == 1 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+
+	e.SetOrder(radiobrowser.OrderName)
+	waitFor(t, func() bool { return len(source.asked()) == 2 })
+	waitFor(t, func() bool { return !e.Snapshot().Searching })
+
+	// Back to the first order: the answer is cached, so the spinner must
+	// not appear at all, not even for one frame.
+	e.SetOrder(radiobrowser.OrderVotes)
+	if e.Snapshot().Searching {
+		t.Error("a cached answer turned the spinner on")
+	}
+	since := len(source.asked())
+	time.Sleep(50 * time.Millisecond)
+	if got := len(source.asked()); got != since {
+		t.Errorf("going back asked again: %d requests", got)
+	}
+}

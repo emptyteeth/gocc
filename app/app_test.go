@@ -494,14 +494,19 @@ func TestBrowseChangesCountryAndOrder(t *testing.T) {
 	})
 
 	// The order is part of the next request.
-	a.engine.SetOrder(radiobrowser.OrderBitrate)
+	a.engine.SetOrder(radiobrowser.OrderName)
 	waitFor(t, func() bool {
 		queries := source.asked()
-		return len(queries) > 0 && queries[len(queries)-1].Order == radiobrowser.OrderBitrate
+		return len(queries) > 0 && queries[len(queries)-1].Order == radiobrowser.OrderName
 	})
 	tt.Frame()
-	if !tt.HasText("Bitrate") {
-		t.Errorf("the order control does not show: %v", tt.Texts())
+	for _, label := range []string{"Votes", "Popular", "Name"} {
+		if !tt.HasText(label) {
+			t.Errorf("the order control does not show %q: %v", label, tt.Texts())
+		}
+	}
+	if tt.HasText("Bitrate") {
+		t.Errorf("the order control still offers Bitrate: %v", tt.Texts())
 	}
 }
 

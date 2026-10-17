@@ -24,7 +24,9 @@ const (
 	// that is down is not asked again on every keystroke.
 	errorTTL = 30 * time.Second
 	// maxCachedStations is the most queries kept. A page is a hundred
-	// stations, so this bounds the cache at a few megabytes.
+	// stations, each with its catalogue fields, so this is a handful of
+	// megabytes at most: the point is not to grow without end, not to be
+	// exact.
 	maxCachedStations = 64
 )
 
@@ -97,22 +99,31 @@ func (c *stationCache) put(key stationKey, stations []radiobrowser.Station, err 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if _, ok := c.pages[key]; ok {
-		c.touchLocked(key)
+	// Make room first: the page being written is the one that must
+	// survive, so it is not a candidate for eviction. Doing this after
+	// the write would drop the new page when the cache was full.
+	for len(c.pages) >= c.max {
+		if _, ok := c.pages[key]; ok {
+			break // replacing a page does not grow the cache
+		}
+		if len(c.order) == 0 {
+			break
+		}
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.pages, oldest)
 	}
+
+	// A page put again is the newest one used: take its old place out of
+	// the order before adding it back, so that the order never holds a
+	// key twice.
+	c.removeOrderLocked(key)
 	c.pages[key] = stationPage{
 		stations: append([]radiobrowser.Station(nil), stations...),
 		err:      err,
 		at:       c.now(),
 	}
 	c.order = append(c.order, key)
-	for len(c.pages) > c.max && len(c.order) > 0 {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		if _, ok := c.pages[oldest]; ok {
-			delete(c.pages, oldest)
-		}
-	}
 }
 
 // clear forgets everything, as a scan asks: the catalogue may have

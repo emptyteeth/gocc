@@ -165,3 +165,27 @@ func TestCountryCacheClear(t *testing.T) {
 		t.Error("the countries survived a clear")
 	}
 }
+
+func TestStationCachePutsTheSamePageTwiceCleanly(t *testing.T) {
+	c := newStationCache()
+	c.max = 2
+	c.put(testKey(), nil, nil)
+	c.put(testKey(), nil, nil) // the same page again
+	c.put(stationKey{country: "FR"}, nil, nil)
+
+	// A page put again is one entry in the order, not two: the order must
+	// not hold a key twice, or eviction could drop a page still in use.
+	if len(c.order) != len(c.pages) {
+		t.Fatalf("order holds %d entries for %d pages", len(c.order), len(c.pages))
+	}
+
+	// The page put once is the oldest used, so it is the one dropped when
+	// another arrives; the one put twice survives.
+	c.put(stationKey{country: "US"}, nil, nil)
+	if _, _, ok := c.get(testKey()); ok {
+		t.Error("the least recently used page was kept")
+	}
+	if _, _, ok := c.get(stationKey{country: "FR"}); !ok {
+		t.Error("a newer page was dropped")
+	}
+}

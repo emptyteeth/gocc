@@ -970,8 +970,12 @@ func (e *Engine) SetOrder(order radiobrowser.Order) {
 
 // SetStationQuery keeps the stations whose name contains q, and reads them
 // again. An empty q lists every station of the country.
+//
+// The service matches a name without regard to case, so the query is
+// lowercased before it is used: "Jazz" and "jazz" are one question, and
+// one request rather than two.
 func (e *Engine) SetStationQuery(q string) {
-	q = strings.TrimSpace(q)
+	q = strings.ToLower(strings.TrimSpace(q))
 	e.mu.Lock()
 	if e.query == q {
 		e.mu.Unlock()
