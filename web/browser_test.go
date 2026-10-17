@@ -89,6 +89,18 @@ func newBrowserSource() *browserSource {
 				URLResolved: "https://a/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
 			{UUID: "s2", Name: "Jazz Radio", URL: "http://b",
 				URLResolved: "https://b/stream", Codec: "AAC", CountryCode: "DE"},
+			{UUID: "s3", Name: "1LIVE", URL: "http://c",
+				URLResolved: "https://c/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s4", Name: "WDR 5", URL: "http://d",
+				URLResolved: "https://d/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s5", Name: "SWR3", URL: "http://e",
+				URLResolved: "https://e/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s6", Name: "Deutschlandfunk", URL: "http://f",
+				URLResolved: "https://f/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s7", Name: "Bayern 3", URL: "http://g",
+				URLResolved: "https://g/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
+			{UUID: "s8", Name: "NDR 2", URL: "http://h",
+				URLResolved: "https://h/stream.mp3", Codec: "MP3", CountryCode: "DE", Bitrate: 128},
 		},
 	}
 }
@@ -425,7 +437,7 @@ func TestBrowserBrowse(t *testing.T) {
 	d.goTo(base + "/")
 	d.waitFor("return document.querySelectorAll('#tabs button').length === 2", "the tabs")
 	d.eval("document.getElementById('tab-browse').click()")
-	d.waitFor("return document.querySelectorAll('#stations .station').length === 2", "the stations")
+	d.waitFor("return document.querySelectorAll('#stations .station').length > 0", "the stations")
 
 	// The station's actions play and save it.
 	d.eval("document.querySelectorAll('#stations .station')[0].querySelector('.actions button').click()")
@@ -444,11 +456,14 @@ func TestBrowserBrowse(t *testing.T) {
 		t.Errorf("the order is %q, want name", got)
 	}
 
-	// The search narrows the stations.
+	// The search narrows the stations to the ones whose name holds it.
 	d.eval("document.getElementById('search').value = 'jazz'")
 	d.eval("document.getElementById('search').dispatchEvent(new Event('input', {bubbles: true}))")
 	time.Sleep(700 * time.Millisecond)
 	d.waitFor("return document.querySelectorAll('#stations .station').length === 1", "the search result")
+	if got := d.evalString("return document.querySelector('#stations .station .title').textContent"); got != "Jazz Radio" {
+		t.Errorf("the search left %q, want Jazz Radio", got)
+	}
 }
 
 // engineHasFavorite asks the page's state whether a favorite was saved.
@@ -613,7 +628,7 @@ func TestBrowserStationCards(t *testing.T) {
 	d.goTo(base + "/")
 	d.waitFor("return document.querySelectorAll('#tabs button').length === 2", "the tabs")
 	d.eval("document.getElementById('tab-browse').click()")
-	d.waitFor("return document.querySelectorAll('#stations .station').length === 2", "the stations")
+	d.waitFor("return document.querySelectorAll('#stations .station').length > 0", "the stations")
 
 	// The card is a square: its height matches its width.
 	square := d.evalBool(`
@@ -646,4 +661,43 @@ func TestBrowserStationCards(t *testing.T) {
 			new MouseEvent('dblclick', {bubbles: true}));
 	`)
 	waitFor(t, func() bool { return len(device.playedURLs()) == 1 })
+}
+
+// TestBrowserGridRowsDoNotOverlap checks the catalogue grid's rows: each
+// card is square, and a row is as tall as its cards, with the gap between
+// rows the grid asks for. Without that, the rows overlap like a card game.
+func TestBrowserGridRowsDoNotOverlap(t *testing.T) {
+	device := &fakeDevice{}
+	base, _ := newBrowserServerWith(t, device, 0)
+	d := newDriver(t)
+
+	d.goTo(base + "/")
+	d.waitFor("return document.querySelectorAll('#tabs button').length === 2", "the tabs")
+	d.eval("document.getElementById('tab-browse').click()")
+	d.waitFor("return document.querySelectorAll('#stations .station').length === 8", "the stations")
+
+	rows := d.eval(`
+		const cards = [...document.querySelectorAll('#stations .station')]
+			.map(c => c.getBoundingClientRect());
+		const byTop = new Map();
+		for (const r of cards) byTop.set(Math.round(r.top), r);
+		const tops = [...byTop.keys()].sort((a, b) => a - b);
+		const gap = parseFloat(getComputedStyle(document.getElementById('stations')).gap);
+		return { tops, height: cards[0].height, gap, count: cards.length };
+	`)
+	m := rows.(map[string]any)
+	tops := m["tops"].([]any)
+	height := m["height"].(float64)
+	gap := m["gap"].(float64)
+
+	if len(tops) < 2 {
+		t.Fatalf("the grid made %d row(s); the check needs two", len(tops))
+	}
+	first, second := tops[0].(float64), tops[1].(float64)
+	want := height + gap
+	got := second - first
+	if diff := got - want; diff > 1 || diff < -1 {
+		t.Errorf("rows are %vpt apart, want %v (card %v + gap %v): they overlap or leave a hole",
+			got, want, height, gap)
+	}
 }

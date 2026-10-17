@@ -170,31 +170,38 @@
   .filters .segmented { flex: none; }
 
   /* Station cards: a square picture with the text over its bottom. */
-  .grid { overflow: auto; flex: 1; min-height: 0; display: grid; gap: 8px; align-content: start;
-    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  /* The pictures are squares, and the row must be as tall as the column
+     is wide: aspect-ratio on an item does not size an implicit grid row,
+     so each row is told to take the height of the item it holds. */
+  .grid { overflow: auto; flex: 1; min-height: 0; display: grid; gap: 8px;
+    align-content: start;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    grid-auto-rows: auto; }
   .station {
-    position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden;
+    position: relative; border-radius: 8px; overflow: hidden;
     background: var(--surface-hover); cursor: default;
+    /* A square that sizes its grid row: padding-top is a share of the
+       width, and the content is laid over the whole box. */
+    padding-top: 100%;
   }
-  .station img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .station .initials {
-    position: absolute; inset: 0; display: grid; place-items: center;
-    font-size: 30px; font-weight: 600; color: var(--muted);
-  }
+  .station > * { position: absolute; }
+  .station img { inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+  .station .initials { inset: 0; display: grid; place-items: center;
+    font-size: 30px; font-weight: 600; color: var(--muted); }
   .station .shade {
-    position: absolute; inset: auto 0 0 0; height: 60px;
+    inset: auto 0 0 0; height: 60px;
     background: linear-gradient(180deg, transparent, rgba(0,0,0,.88));
     pointer-events: none;
   }
   .station .meta {
-    position: absolute; inset: auto 8px 6px 8px; color: #fff;
+    inset: auto 8px 6px 8px; color: #fff;
     display: flex; flex-direction: column; gap: 1px;
   }
   .station .meta .title { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .station .meta .detail { font-size: 10px; color: rgba(255,255,255,.78);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .station .actions {
-    position: absolute; top: 6px; right: 6px; display: flex; gap: 4px;
+    top: 6px; right: 6px; display: flex; gap: 4px;
     opacity: 0; transition: opacity .12s ease;
   }
   .station:hover .actions, .station:focus-within .actions { opacity: 1; }
