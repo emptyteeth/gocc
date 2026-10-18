@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/core"
-	"github.com/free/gocc/playlist"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/core"
+	"github.com/emptyteeth/gocc/playlist"
 )
 
 // fakeDevice stands in for a device, so that the server can be driven in a

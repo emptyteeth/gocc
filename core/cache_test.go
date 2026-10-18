@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 // clock is a time the test moves.

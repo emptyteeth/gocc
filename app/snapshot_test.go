@@ -10,9 +10,9 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/core"
-	"github.com/free/gocc/playlist"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/core"
+	"github.com/emptyteeth/gocc/playlist"
 )
 
 // TestRenderSnapshot writes a picture of the window to /tmp, to look at

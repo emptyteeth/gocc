@@ -2,7 +2,7 @@
 //
 // Version is set at build time:
 //
-//	go build -ldflags "-X github.com/free/gocc/internal/version.Version=v1.2.3"
+//	go build -ldflags "-X github.com/emptyteeth/gocc/internal/version.Version=v1.2.3"
 //
 // The Makefile does that, from a git tag or the commit. A plain `go build`
 // leaves "dev" here, which is the honest answer for a tree built that way.

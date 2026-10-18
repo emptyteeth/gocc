@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/free/gocc/playlist"
+	"github.com/emptyteeth/gocc/playlist"
 )
 
 // serve makes a client whose base URL is a test server answering with the

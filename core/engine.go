@@ -21,10 +21,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/internal/version"
-	"github.com/free/gocc/playlist"
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/internal/version"
+	"github.com/emptyteeth/gocc/playlist"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 // Controller is a device gocc talks to: a real cast.Client, or a stand-in

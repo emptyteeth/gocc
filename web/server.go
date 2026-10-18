@@ -20,10 +20,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/core"
-	"github.com/free/gocc/playlist"
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/core"
+	"github.com/emptyteeth/gocc/playlist"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 //go:embed ui

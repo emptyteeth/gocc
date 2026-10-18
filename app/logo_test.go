@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 // pngBytes is a small valid PNG, for a test server to serve.

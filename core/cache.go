@@ -4,7 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 // The catalogue is read over the network, and each answer takes a couple

@@ -10,10 +10,10 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/core"
-	"github.com/free/gocc/playlist"
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/core"
+	"github.com/emptyteeth/gocc/playlist"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 // fakeDevice stands in for a device, so that the window can be driven in a

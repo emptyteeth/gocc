@@ -1,5 +1,8 @@
 # gocc
 
+[![Go](https://img.shields.io/github/go-mod/go-version/emptyteeth/gocc)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 gocc controls Chromecast devices on your local network: it finds them, plays
 internet radio on the one you choose, and sets what it plays and how loud.
 
@@ -247,3 +250,7 @@ GOCC_SNAPSHOT=1 go test ./app/ -run TestRenderSnapshot
 ```
 
 The command line version's page is just its URL in a browser.
+
+## License
+
+[MIT](LICENSE).

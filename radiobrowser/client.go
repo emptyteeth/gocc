@@ -18,7 +18,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/free/gocc/playlist"
+	"github.com/emptyteeth/gocc/playlist"
 )
 
 // DefaultBaseURL is the host the client talks to when Options names none.

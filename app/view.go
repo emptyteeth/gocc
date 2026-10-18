@@ -5,8 +5,8 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/core"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/core"
 )
 
 // view builds the window: the devices on the left, what the chosen device

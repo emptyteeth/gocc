@@ -25,10 +25,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/free/gocc/cast"
-	"github.com/free/gocc/core"
-	"github.com/free/gocc/internal/version"
-	"github.com/free/gocc/web"
+	"github.com/emptyteeth/gocc/cast"
+	"github.com/emptyteeth/gocc/core"
+	"github.com/emptyteeth/gocc/internal/version"
+	"github.com/emptyteeth/gocc/web"
 )
 
 func main() {

@@ -10,9 +10,9 @@ import (
 
 	"github.com/egoist/mygo/ui"
 
-	"github.com/free/gocc/core"
-	"github.com/free/gocc/playlist"
-	"github.com/free/gocc/radiobrowser"
+	"github.com/emptyteeth/gocc/core"
+	"github.com/emptyteeth/gocc/playlist"
+	"github.com/emptyteeth/gocc/radiobrowser"
 )
 
 // The icons of a station card, drawn in currentColor so that the button's

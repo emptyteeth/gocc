@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/free/gocc/playlist"
+	"github.com/emptyteeth/gocc/playlist"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/free/gocc/core"
+	"github.com/emptyteeth/gocc/core"
 )
 
 // App is the window and the controls that belong to it.

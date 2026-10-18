@@ -17,8 +17,8 @@ import (
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 
-	"github.com/free/gocc/app"
-	"github.com/free/gocc/internal/version"
+	"github.com/emptyteeth/gocc/app"
+	"github.com/emptyteeth/gocc/internal/version"
 )
 
 func main() {

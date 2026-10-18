@@ -13,7 +13,7 @@
 
 BIN      := bin
 DIST     := dist
-PACKAGE  := github.com/free/gocc
+PACKAGE  := github.com/emptyteeth/gocc
 VERSION  := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT   := $(shell git rev-parse --short HEAD 2>/dev/null)
 DATE     := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)

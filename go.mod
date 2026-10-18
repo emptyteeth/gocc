@@ -1,4 +1,4 @@
-module github.com/free/gocc
+module github.com/emptyteeth/gocc
 
 go 1.27.2
 
