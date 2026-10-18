@@ -138,20 +138,67 @@ func (f *browserSource) Stations(_ context.Context, q radiobrowser.Query) ([]rad
 // driver is a browser driven over chromedriver's HTTP API, which is the
 // WebDriver protocol.
 type driver struct {
-	t     *testing.T
-	cmd   *exec.Cmd
-	port  int
-	sess  string
-	alive bool
+	t       *testing.T
+	cmd     *exec.Cmd
+	port    int
+	sess    string
+	alive   bool
+	browser string
 }
 
 // newDriver starts chromedriver and a browser, or skips the test when
 // either is missing.
 func newDriver(t *testing.T) *driver {
 	t.Helper()
-	path, err := exec.LookPath("chromedriver")
+	return newDriverOf(t, "chrome")
+}
+
+// browser is one a test can drive: its driver, and what its session asks
+// for. The grid tests run in both, because browsers lay out a square card
+// in a grid differently, and one of them has got it wrong before.
+type browser struct {
+	name      string
+	driver    string
+	cap       map[string]any
+	extraArgs []string
+}
+
+var browsers = map[string]browser{
+	"chrome": {
+		name:   "chrome",
+		driver: "chromedriver",
+		cap: map[string]any{
+			"browserName": "chrome",
+			"goog:chromeOptions": map[string]any{
+				"args": []string{
+					"--headless=new", "--no-sandbox", "--disable-gpu",
+					"--disable-dev-shm-usage", "--window-size=1280,560",
+				},
+			},
+		},
+	},
+	"firefox": {
+		name:   "firefox",
+		driver: "geckodriver",
+		cap: map[string]any{
+			"browserName":         "firefox",
+			"acceptInsecureCerts": true,
+			"moz:firefoxOptions":  map[string]any{"args": []string{"-headless"}},
+		},
+	},
+}
+
+// newDriverOf starts the driver and browser named by name, or skips the
+// test when they are not installed.
+func newDriverOf(t *testing.T, name string) *driver {
+	t.Helper()
+	browser, ok := browsers[name]
+	if !ok {
+		t.Fatalf("unknown browser %q", name)
+	}
+	path, err := exec.LookPath(browser.driver)
 	if err != nil {
-		t.Skip("chromedriver is not installed; skipping the browser test")
+		t.Skipf("%s is not installed; skipping the browser test", browser.driver)
 	}
 
 	// A port the driver can have: take one the kernel gives and give it
@@ -165,10 +212,10 @@ func newDriver(t *testing.T) *driver {
 
 	cmd := exec.Command(path, fmt.Sprintf("--port=%d", port))
 	if err := cmd.Start(); err != nil {
-		t.Skipf("chromedriver did not start: %v", err)
+		t.Skipf("%s did not start: %v", browser.driver, err)
 	}
 
-	d := &driver{t: t, cmd: cmd, port: port}
+	d := &driver{t: t, cmd: cmd, port: port, browser: name}
 	t.Cleanup(d.stop)
 
 	// Wait for the driver to answer.
@@ -187,17 +234,7 @@ func newDriver(t *testing.T) *driver {
 		} `json:"value"`
 	}
 	err = d.callInto("POST", "/session", map[string]any{
-		"capabilities": map[string]any{
-			"alwaysMatch": map[string]any{
-				"browserName": "chrome",
-				"goog:chromeOptions": map[string]any{
-					"args": []string{
-						"--headless=new", "--no-sandbox", "--disable-gpu",
-						"--disable-dev-shm-usage", "--window-size=1280,560",
-					},
-				},
-			},
-		},
+		"capabilities": map[string]any{"alwaysMatch": browser.cap},
 	}, &out)
 	if err != nil {
 		t.Skipf("a browser could not be started: %v", err)
@@ -667,10 +704,19 @@ func TestBrowserStationCards(t *testing.T) {
 // card is square, and a row is as tall as its cards, with the gap between
 // rows the grid asks for. Without that, the rows overlap like a card game.
 func TestBrowserGridRowsDoNotOverlap(t *testing.T) {
+	for _, name := range []string{"chrome", "firefox"} {
+		t.Run(name, func(t *testing.T) {
+			testGridRows(t, name)
+		})
+	}
+}
+
+func testGridRows(t *testing.T, browser string) {
 	device := &fakeDevice{}
 	base, _ := newBrowserServerWith(t, device, 0)
-	d := newDriver(t)
+	d := newDriverOf(t, browser)
 
+	d.setWindow(900, 700)
 	d.goTo(base + "/")
 	d.waitFor("return document.querySelectorAll('#tabs button').length === 2", "the tabs")
 	d.eval("document.getElementById('tab-browse').click()")
