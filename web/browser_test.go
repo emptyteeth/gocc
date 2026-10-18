@@ -747,3 +747,51 @@ func testGridRows(t *testing.T, browser string) {
 			got, want, height, gap)
 	}
 }
+
+// TestBrowserAddFormOneRow checks the favorites form: a name, a URL and
+// the button on one row on a desktop, and no content type field.
+func TestBrowserAddFormOneRow(t *testing.T) {
+	device := &fakeDevice{}
+	base, _ := newBrowserServerWith(t, device, 0)
+	d := newDriver(t)
+
+	d.setWindow(1200, 800)
+	d.goTo(base + "/")
+	d.waitFor("return document.getElementById('add') !== null", "the form")
+
+	if d.evalBool("return document.getElementById('add-type') !== null") {
+		t.Error("the form still has a content type field")
+	}
+
+	ok := d.evalBool(`
+		const n = document.getElementById('add-name').getBoundingClientRect();
+		const u = document.getElementById('add-url').getBoundingClientRect();
+		const b = document.querySelector('#add button').getBoundingClientRect();
+		return Math.abs(n.top - u.top) < 4 && Math.abs(n.top - b.top) < 4;
+	`)
+	if !ok {
+		t.Error("the name, URL and Add are not on one row")
+	}
+}
+
+// TestBrowserAddFormOnAPhone checks that the form wraps to two lines on a
+// phone, with the name and the button together.
+func TestBrowserAddFormOnAPhone(t *testing.T) {
+	device := &fakeDevice{}
+	base, _ := newBrowserServerWith(t, device, 0)
+	d := newDriver(t)
+
+	d.setWindow(390, 844)
+	d.goTo(base + "/")
+	d.waitFor("return document.getElementById('add') !== null", "the form")
+
+	ok := d.evalBool(`
+		const n = document.getElementById('add-name').getBoundingClientRect();
+		const u = document.getElementById('add-url').getBoundingClientRect();
+		const b = document.querySelector('#add button').getBoundingClientRect();
+		return Math.abs(n.top - b.top) < 4 && u.top > n.bottom - 2;
+	`)
+	if !ok {
+		t.Error("on a phone the name and the button should share a row, with the URL below")
+	}
+}

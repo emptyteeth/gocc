@@ -41,7 +41,6 @@ type App struct {
 	mutedAt  time.Time
 	newName  string
 	newURL   string
-	newType  string
 
 	// The right column: which pane shows, and what belongs to each.
 	pane      int

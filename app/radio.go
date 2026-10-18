@@ -119,25 +119,25 @@ func (a *App) favoriteRow(c *ui.Context, t *ui.Theme, e playlist.Entry, chosen b
 	})
 }
 
-// favoriteForm adds a hand written entry to the favorites.
+// favoriteForm adds a hand written entry to the favorites: a name, a URL
+// and the button, on one row.
 func (a *App) favoriteForm(c *ui.Context, t *ui.Theme) {
-	ui.Column(c).Gap(6).Padding(8).Radius(8).Background(t.Surface).Children(func() {
-		ui.Text(c, "Add by URL").FontSize(11).Bold().TextColor(t.TextMuted)
-		ui.TextInput(c, &a.newName).Placeholder("Name").Label("Name")
-		ui.TextInput(c, &a.newURL).Placeholder("http://radio.example/stream.mp3").Label("URL")
-		ui.TextInput(c, &a.newType).Placeholder("Content type (optional)").Label("Content type")
-		ui.Row(c).Gap(6).Justify(ui.End).Children(func() {
-			ui.PrimaryButton(c, "Add").OnClick(a.submitNewFavorite)
-		})
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(8).Radius(8).
+		Background(t.Surface).Children(func() {
+		ui.TextInput(c, &a.newName).Placeholder("Name").Label("Name").Width(110)
+		ui.TextInput(c, &a.newURL).Placeholder("http://radio.example/stream.mp3").
+			Label("URL").Grow(1)
+		ui.PrimaryButton(c, "Add").OnClick(a.submitNewFavorite)
 	})
 }
 
 // submitNewFavorite checks the form and saves the entry.
 func (a *App) submitNewFavorite() {
+	// A hand written entry has no content type: the device works it out
+	// from the URL, and the form no longer asks for one.
 	entry := playlist.Entry{
-		Name:        strings.TrimSpace(a.newName),
-		URL:         strings.TrimSpace(a.newURL),
-		ContentType: strings.TrimSpace(a.newType),
+		Name: strings.TrimSpace(a.newName),
+		URL:  strings.TrimSpace(a.newURL),
 	}
 	if err := core.ValidateEntry(entry); err != nil {
 		a.engine.ReportError(err)
@@ -147,7 +147,7 @@ func (a *App) submitNewFavorite() {
 		a.engine.ReportError(err)
 		return
 	}
-	a.newName, a.newURL, a.newType = "", "", ""
+	a.newName, a.newURL = "", ""
 }
 
 // browsePane browses the radio-browser catalogue: a country, an order and

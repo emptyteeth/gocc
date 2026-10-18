@@ -278,8 +278,21 @@ func TestAddFavoriteByURL(t *testing.T) {
 	a, _ := newTestApp(t)
 	tt := ui.NewTester(a.View, 1100, 700)
 
-	if !tt.HasText("Add by URL") {
-		t.Fatalf("no form: %v", tt.Texts())
+	// The form is a row: a name field, a URL field and Add.
+	for _, label := range []string{"Name", "URL", "Add"} {
+		if !found(tt, label) {
+			t.Fatalf("the form has no %s: %v", label, tt.Texts())
+		}
+	}
+	// They share a row: their tops are close together.
+	name, _ := tt.Find("Name")
+	url, _ := tt.Find("URL")
+	add, _ := tt.Find("Add")
+	if d := url.Y - name.Y; d > 12 || d < -12 {
+		t.Errorf("the name and URL are not on one row: %v and %v", name.Y, url.Y)
+	}
+	if d := add.Y - name.Y; d > 12 || d < -12 {
+		t.Errorf("the Add button is not on the form's row: %v and %v", add.Y, name.Y)
 	}
 
 	a.newName = "radio3"
@@ -420,8 +433,8 @@ func TestBrowseShowsStationsAndFavorites(t *testing.T) {
 	a, device, source := newTestAppWithSource(t)
 	tt := ui.NewTester(a.View, 1200, 720)
 
-	// The favorites pane is what shows first.
-	if !tt.HasText("Favorites") || !tt.HasText("Add by URL") {
+	// The favorites pane is what shows first, with its add form.
+	if !tt.HasText("Favorites") || !found(tt, "Name") {
 		t.Fatalf("the favorites pane does not show: %v", tt.Texts())
 	}
 

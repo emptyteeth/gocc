@@ -138,9 +138,11 @@
 
   form.add {
     background: var(--surface); border-radius: var(--radius);
-    padding: 8px; display: flex; flex-direction: column; gap: 6px;
+    padding: 8px; display: flex; align-items: center; gap: 6px;
   }
-  form.add .actions { display: flex; justify-content: flex-end; }
+  form.add #add-name { flex: 0 0 110px; }
+  form.add #add-url { flex: 1 1 auto; }
+  form.add button { flex: none; }
 
   .error {
     border-radius: var(--radius); padding: 8px; background: var(--surface);
@@ -233,6 +235,14 @@
     .filters select { max-width: none; flex: 1 1 100%; }
     .toolbar { gap: 8px; }
     .search { min-width: 100%; order: 3; }
+    /* The URL needs a row of its own on a phone, under the name and the
+       button. */
+    form.add { flex-wrap: wrap; }
+    /* The name and the button share the first line; the URL takes the
+       next. The name may shrink so that the button fits beside it. */
+    form.add #add-name { flex: 1 1 120px; min-width: 0; order: 1; }
+    form.add button   { order: 2; }
+    form.add #add-url { flex: 1 1 100%; order: 3; }
   }
 </style>
 </head>
@@ -281,8 +291,7 @@
       <form class="add" id="add">
         <input id="add-name" placeholder="Name" autocomplete="off">
         <input id="add-url" placeholder="http://radio.example/stream.mp3" autocomplete="off">
-        <input id="add-type" placeholder="Content type (optional)" autocomplete="off">
-        <div class="actions"><button class="primary" type="submit">Add</button></div>
+        <button class="primary" type="submit">Add</button>
       </form>
     </section>
   </div>
@@ -703,11 +712,9 @@ $("add").onsubmit = act(async (event) => {
   await api("POST", "/api/favorites", {
     name: $("add-name").value,
     url: $("add-url").value,
-    contentType: $("add-type").value,
   });
   $("add-name").value = "";
   $("add-url").value = "";
-  $("add-type").value = "";
   $("add-name").focus();
 });
 
