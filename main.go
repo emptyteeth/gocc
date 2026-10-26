@@ -55,6 +55,7 @@ func main() {
 			Height:    660,
 			MinWidth:  840,
 			MinHeight: 480,
+			TitleBarStyle: mygo.TitleBarHidden,
 			Content:   ui.View(application.View),
 		})
 		application.Attach(win)
