@@ -146,7 +146,7 @@ func (a *App) controlPane(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 						ui.Text(c, deviceName(device)).FontSize(16).Bold().SingleLine()
 						ui.Text(c, device.Addr).FontSize(11).TextColor(t.TextMuted).SingleLine()
 					})
-					ui.Button(c, "Disconnect").OnClick(a.engine.Disconnect)
+					
 				})
 			} else {
 				ui.Text(c, "The device is gone").FontSize(16).Bold()
@@ -237,6 +237,8 @@ func (a *App) transport(c *ui.Context, t *ui.Theme, s core.Snapshot) {
 			OnClick(a.engine.Stop)
 		ui.Button(c, "Refresh").Tooltip("Read the device's state again").
 			OnClick(a.engine.Refresh)
+		ui.Button(c, "Disconnect").
+			OnClick(a.engine.Disconnect)
 	})
 
 	// A device buffers a stream before it plays it, and the app is
